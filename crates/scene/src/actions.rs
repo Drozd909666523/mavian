@@ -283,8 +283,10 @@ pub(crate) fn compile_shot(shot: &mut crate::Shot) -> Result<ShotEffects, String
     }
     plan_contact_routes(&mut shot.actors, &shot.props, shot.style.line);
     crate::contact::plan_poles(&mut shot.actors, &shot.props);
+    crate::grip::plan_rejections(shot);
     crate::grip::verify(shot)?;
     shot.plan_arm_clearance()?;
+    crate::grip::refresh_rejections(shot);
     crate::grip::verify(shot)?;
     Ok(fx)
 }

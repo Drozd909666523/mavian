@@ -533,6 +533,62 @@ fn blocked_grasp_barrier_stays_outside_the_actor_body_and_the_cup() {
 }
 
 #[test]
+fn blocked_grasp_returns_smoothly_without_touching_the_barrier_or_table() {
+    use mavian_scene::obstacle::Obstacle;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shots/grasp.py");
+    let (_, mut s) = mavian_py::load_file(&path).unwrap().into_iter().find(|(name, _)| name == "blocked").unwrap();
+    let actor = &s.actors[0];
+    let hand = actor.model.rig.joint("hand_r").unwrap();
+    let chain = mavian_scene::actions::chain(actor, hand).unwrap();
+    let mut previous: Option<std::sync::Arc<mavian_rig::Figure>> = None;
+    let mut velocity = [mavian_core::Vec3::ZERO; 2];
+    let mut maximum = (0.0f64, 0.0f64);
+    let mut minimum = f64::INFINITY;
+    let mut poses = Vec::new();
+    for n in 0..=1440 {
+        let w = n as f64 / 480.0;
+        let fig = s.posed(0, w).0;
+        assert!(s.self_collision_reports(w).is_empty(), "rejected arm enters body at {w}");
+        for (index, p) in s.props.iter().enumerate() {
+            let (pos, rot) = s.prop_rest(index, w);
+            let obstacle = Obstacle { prop: index, shape: p.shape.clone(), pos, rot };
+            for k in 0..2 {
+                let gap = obstacle.capsule(fig.joints[chain[k]], [0.062, 0.050][k], fig.joints[chain[k + 1]], [0.050, 0.052][k]).0;
+                minimum = minimum.min(gap);
+                assert!(gap >= 0.009, "arm touches {} at {w}: {gap}", p.name);
+            }
+        }
+        if let Some(old) = previous {
+            for (k, j) in [chain[1], hand].into_iter().enumerate() {
+                let delta = fig.joints[j] - old.joints[j];
+                maximum.0 = maximum.0.max(delta.length());
+                if n > 1 && (delta - velocity[k]).length() > maximum.1 {
+                    maximum.1 = (delta - velocity[k]).length();
+                }
+                velocity[k] = delta;
+            }
+        }
+        if w >= 1.35 {
+            for j in chain {
+                assert!((fig.joints[j] - actor.figure(w).joints[j]).length() < 1e-8, "failed grab keeps posing at {w}");
+            }
+        }
+        previous = Some(fig.clone());
+        poses.push(fig);
+    }
+    assert!(maximum.0 < 0.005, "rejected reach jumps: {maximum:?}");
+    assert!(maximum.1 < 0.0005, "rejected reach changes velocity abruptly: {maximum:?}");
+    let r = &s.grab_reports[0];
+    assert_eq!(r.actual, s.posed(0, r.at).0.joints[hand]);
+    assert!((r.error - (r.actual - r.target).length()).abs() < 1e-9);
+    eprintln!("rejected reach at 480 Hz: max displacement {:.9}m, max second difference {:.9}m, min clearance {minimum:.9}m", maximum.0, maximum.1);
+    s.compile().unwrap();
+    for n in (0..=1440).rev() {
+        assert_eq!(poses[n], s.posed(0, n as f64 / 480.0).0);
+    }
+}
+
+#[test]
 fn grasp_preserves_clear_carry_and_has_a_continuous_pick_place_return() {
     let mut s = load("grasp");
     let actor = &s.actors[0];

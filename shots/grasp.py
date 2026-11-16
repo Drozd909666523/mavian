@@ -13,13 +13,14 @@ MODEL = MANNEQUIN.with_poses({
 
 
 def make(mode="valid"):
-    actor = Actor(MODEL, squash=0.0, pose_lock=mode == "locked", poses=keys({
+    poses = keys({
         0.0: key("stand", plant="l"),
         1.0: key("stand", plant="l"),
         1.45: key("carry", plant="l"),
         1.8: key("carry", plant="l"),
         2.75: key("stand", plant="l"),
-    }))
+    }) if mode == "valid" else "stand"
+    actor = Actor(MODEL, squash=0.0, pose_lock=mode == "locked", poses=poses)
     z = 1.6 if mode == "far" else 0.35
     cup = Prop(Box(0.13, 0.17, 0.13), at=(-0.30, 1.0, z),
                name="cup", fill="#d9bd88")

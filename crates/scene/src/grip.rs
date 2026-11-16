@@ -190,6 +190,118 @@ pub(crate) fn grab(shot: &mut Shot, action: &Action) -> Result<(), String> {
     Ok(())
 }
 
+/// Refused acquisition does not authorize pushing an arm through its target.
+/// Find a clear prefix of the requested reach, then use the same eased window
+/// to return. Author tracks and successful acquisition contacts are untouched.
+pub(crate) fn plan_rejections(shot: &mut Shot) {
+    let rejected: Vec<_> = shot.grab_reports.iter().filter(|r| r.status == GrabStatus::Obstructed).cloned().collect();
+    for r in rejected {
+        let actor = &shot.actors[r.actor];
+        if actor.pose_lock {
+            continue;
+        }
+        let Some(index) = actor.auto_contacts.iter().position(|c| {
+            c.name == format!("grab:{}", shot.props[r.prop].name) && c.chain[2] == r.hand && c.withdrawal.is_some_and(|(at, _)| at == r.at)
+        }) else {
+            continue;
+        };
+        let original = actor.auto_contacts[index].clone();
+        let mut reach = original.clone();
+        // A refused reach keeps the authored bend instead of rotating towards
+        // the grip pole of an object that the hand will not acquire.
+        reach.pole = None;
+        reach.pole_turn = None;
+        let set_scale = |shot: &mut Shot, amount| {
+            let mut contact = reach.clone();
+            contact.rejection = Some((r.at, amount));
+            shot.actors[r.actor].auto_contacts[index] = contact;
+            forget(shot);
+        };
+        set_scale(shot, 0.0);
+        if rejection_is_clear(shot, r.actor, original.chain, original.from, original.to) {
+            let (mut low, mut high) = (0.0, 1.0);
+            // Test growing prefixes rather than assuming disconnected feasible
+            // intervals form one monotone search space.
+            for n in 1..=16 {
+                let amount = n as f64 / 16.0;
+                set_scale(shot, amount);
+                if rejection_is_clear(shot, r.actor, original.chain, original.from, original.to) {
+                    low = amount;
+                } else {
+                    high = amount;
+                    break;
+                }
+            }
+            for _ in 0..8 {
+                if low == 1.0 {
+                    break;
+                }
+                let mid = (low + high) * 0.5;
+                set_scale(shot, mid);
+                if rejection_is_clear(shot, r.actor, original.chain, original.from, original.to) {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            set_scale(shot, low);
+        }
+    }
+}
+
+fn rejection_is_clear(shot: &Shot, actor: usize, chain: [usize; 3], from: f64, to: f64) -> bool {
+    use crate::{
+        clearance::{body_arm, body_solids},
+        obstacle::{clearance, joint_radius},
+    };
+    let a = &shot.actors[actor];
+    let radii = chain.map(|j| joint_radius(a, j, shot.style.line));
+    let margin = 0.01 * a.scale;
+    let samples = ((to - from) * 480.0).ceil().max(1.0) as usize;
+    let mut previous: Option<(f64, mavian_rig::Figure)> = None;
+    for n in 0..=samples {
+        let w = from + (to - from) * n as f64 / samples as f64;
+        let (base, m) = shot.deformed(actor, w);
+        let fig = shot.solve_actor_contacts(actor, w, &base, m).0;
+        if clearance(&shot.arm_obstacles(actor, chain[2], w, &fig), &fig.joints, chain, radii) < margin
+            || body_solids(a, &fig).iter().any(|(_, body)| body_arm(body, &fig, chain, radii).0 < -PENETRATION)
+        {
+            return false;
+        }
+        if let Some((old_w, old)) = previous {
+            let root = fig.joints[chain[0]] - old.joints[chain[0]];
+            if [chain[1], chain[2]].into_iter().any(|j| (fig.joints[j] - old.joints[j] - root).length() > 2.0 * a.scale * (w - old_w)) {
+                return false;
+            }
+            let mid = (w + old_w) * 0.5;
+            let mut swept = fig.clone();
+            for j in chain {
+                swept.joints[j] = old.joints[j].lerp(fig.joints[j], 0.5);
+            }
+            if clearance(&shot.arm_obstacles(actor, chain[2], mid, &swept), &swept.joints, chain, radii) < margin {
+                return false;
+            }
+        }
+        previous = Some((w, fig));
+    }
+    true
+}
+
+/// Reports describe the visible stopped hand, while retaining the reason that
+/// acquisition failed and the original requested grasp anchor.
+pub(crate) fn refresh_rejections(shot: &mut Shot) {
+    for index in 0..shot.grab_reports.len() {
+        let r = &shot.grab_reports[index];
+        if r.attached() {
+            continue;
+        }
+        let actual = shot.posed(r.actor, r.at).0.joints[r.hand];
+        let error = (actual - r.target).length();
+        shot.grab_reports[index].actual = actual;
+        shot.grab_reports[index].error = error;
+    }
+}
+
 /// Later actions may overlap an earlier acquisition's contact interval. Do
 /// not accept a compiled scene if they invalidate an already verified binding.
 pub(crate) fn verify(shot: &mut Shot) -> Result<(), String> {

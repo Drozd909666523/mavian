@@ -174,6 +174,12 @@ a later release without a successful binding does nothing. An occupied hand or
 already-held prop cannot acquire a second binding. `at` remains the authored
 acquisition instant; no automatic waiting or retiming is added.
 
+An obstructed grab limits its generated reach to a clear partial attempt, then
+returns with smooth easing. The compiler checks both arm segments and their
+motion between samples, leaving clearance from the blocker and nearby supports.
+The acquisition remains rejected; `grabs` reports the stopped hand and its
+remaining distance to the requested anchor. Author pose tracks remain active.
+
 Grab and placement transitions use fixed wrist endpoints sampled from the
 animated, deformed pose. Difficult prop-action intervals receive a deterministic
 arm route with sampled clearance against props, the torso and the head. The

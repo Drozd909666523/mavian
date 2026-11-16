@@ -22,6 +22,8 @@ pub struct Contact {
     pub from: f64,
     pub to: f64,
     pub weight: Track<f64>,
+    /// Compiled refused-reach peak time and clear progress limit; C2 easing.
+    pub(crate) rejection: Option<(f64, f64)>,
     pub priority: Priority,
     pub tolerance: f64,
     pub pole: Option<Vec3>,
@@ -46,6 +48,7 @@ impl Contact {
             from,
             to,
             weight: Track::Const(1.0),
+            rejection: None,
             priority: Priority::Contact,
             tolerance: 0.002,
             pole: None,
@@ -58,7 +61,13 @@ impl Contact {
         }
     }
     pub fn weight_at(&self, w: f64) -> f64 {
-        if w < self.from || w >= self.to { 0.0 } else { self.weight.at(w).clamp(0.0, 1.0) }
+        if w < self.from || w >= self.to { return 0.0; }
+        if let Some((peak, limit)) = self.rejection {
+            let u = if w <= peak { (w - self.from) / (peak - self.from) }
+                else { (self.to - w) / (self.to - peak) }.clamp(0.0, 1.0);
+            return limit * u * u * u * (10.0 + u * (-15.0 + 6.0 * u));
+        }
+        self.weight.at(w).clamp(0.0, 1.0)
     }
     pub(crate) fn goal(&self, reference: &Figure, target: Vec3, w: f64) -> Vec3 {
         let weight = self.weight_at(w);

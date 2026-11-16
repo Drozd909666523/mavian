@@ -222,3 +222,101 @@ fn placement_cannot_start_its_held_motion_before_acquisition() {
     s.actions.push(Action::Release { actor: 0, hand, prop: 0, at: 1.1, onto: Onto::Point(s.props[0].at), reach: 0.4, settle: 0.35 });
     assert!(s.compile().unwrap_err().0.contains("begins before acquisition"));
 }
+
+
+#[test]
+fn obstructed_reaches_stop_clear_and_return_at_both_sides_scales_and_headings() {
+    use mavian_scene::obstacle::Obstacle;
+    for side in [-1.0, 1.0] {
+        for scale in [0.5, 1.0, 2.0] {
+            for heading in [0.0, 73.0, 180.0] {
+                let mut s = scene(0.35);
+                s.actors[0].scale = scale;
+                s.actors[0].facing = heading.into();
+                let hand = s.actors[0].model.rig.joint(if side < 0.0 { "hand_r" } else { "hand_l" }).unwrap();
+                if let Action::Grab { hand: h, .. } = &mut s.actions[0] {
+                    *h = hand;
+                }
+                let rot = Mat3::rot_y(heading);
+                s.props = vec![
+                    Prop::new(
+                        "cup",
+                        Shape::Box { sx: 0.13 * scale, sy: 0.17 * scale, sz: 0.13 * scale },
+                        rot * Vec3 { x: side * 0.30, y: 1.0, z: 0.35 } * scale,
+                    ),
+                    Prop::new(
+                        "support",
+                        Shape::Box { sx: 0.4 * scale, sy: scale, sz: 0.4 * scale },
+                        rot * Vec3 { x: side * 0.30, y: 0.0, z: 0.35 } * scale,
+                    ),
+                    Prop::new(
+                        "barrier",
+                        Shape::Box { sx: 0.13 * scale, sy: 0.24 * scale, sz: 0.04 * scale },
+                        rot * Vec3 { x: side * 0.36, y: 1.0, z: 0.20 } * scale,
+                    ),
+                ];
+                for p in &mut s.props {
+                    p.turn = heading;
+                }
+                compile(&mut s);
+                let report = &s.grab_reports[0];
+                assert_eq!(report.status, GrabStatus::Obstructed, "side={side}, scale={scale}, heading={heading}");
+                assert_eq!(report.actual, s.posed(0, report.at).0.joints[hand]);
+                assert!(report.error > report.tolerance);
+                let chain = mavian_scene::actions::chain(&s.actors[0], hand).unwrap();
+                let radii = [0.062 * scale, 0.050 * scale, 0.052 * scale];
+                let mut lift = 0.0f64;
+                let start = s.actors[0].figure(0.0);
+                for n in 0..=360 {
+                    let w = n as f64 / 240.0;
+                    let fig = s.posed(0, w).0;
+                    let raw = s.actors[0].figure(w);
+                    lift = lift.max(fig.joints[hand].y - start.joints[hand].y);
+                    for (i, p) in s.props.iter().enumerate() {
+                        let (pos, rot) = s.prop_rest(i, w);
+                        let obstacle = Obstacle { prop: i, shape: p.shape.clone(), pos, rot };
+                        for k in 0..2 {
+                            assert!(
+                                obstacle.capsule(fig.joints[chain[k]], radii[k], fig.joints[chain[k + 1]], radii[k + 1]).0 >= 0.009 * scale,
+                                "rejected arm touches {} at {w}",
+                                p.name
+                            );
+                        }
+                    }
+                    for [a, b] in [[chain[0], chain[1]], [chain[1], chain[2]]] {
+                        assert!(((fig.joints[b] - fig.joints[a]).length() - (raw.joints[b] - raw.joints[a]).length()).abs() < 1e-8);
+                    }
+                    if w >= 1.35 {
+                        assert_eq!(fig, raw);
+                    }
+                    assert!(s.props[0].motion.is_empty());
+                }
+                assert!(lift > 0.01 * scale, "safe rejection silently removed the complete attempt");
+            }
+        }
+    }
+}
+
+#[test]
+fn rejected_grip_keeps_later_authored_arm_animation() {
+    let mut s = scene(0.35);
+    let mut model = (*s.actors[0].model).clone();
+    let wave = model.rig.pose().base(model.pose("stand").unwrap()).set("arm_l", (55, 5)).set("elbow_l", 65).build().unwrap();
+    model.add_pose("wave", wave).unwrap();
+    s.actors[0].model = std::sync::Arc::new(model);
+    s.actors[0].poses = mavian_scene::Poses::Keys(
+        Keys::new(Ease::InOut).key(0.0, mavian_scene::pk("stand")).key(1.5, mavian_scene::pk("stand")).key(2.0, mavian_scene::pk("wave")),
+    );
+    s.props.push(Prop::new("barrier", Shape::Box { sx: 0.13, sy: 0.24, sz: 0.04 }, Vec3 { x: -0.36, y: 1.0, z: 0.20 }));
+    let authored: Vec<_> = [1.5, 1.7, 2.0, 2.7].into_iter().map(|w| (w, s.actors[0].figure(w))).collect();
+    compile(&mut s);
+    assert_eq!(s.grab_reports[0].status, GrabStatus::Obstructed);
+    for (w, pose) in authored {
+        assert_eq!(s.actors[0].figure(w), pose);
+        let actual = s.posed(0, w).0;
+        for name in ["arm_l", "elbow_l", "hand_l"] {
+            let j = s.actors[0].model.rig.joint(name).unwrap();
+            assert_eq!(actual.joints[j], pose.joints[j]);
+        }
+    }
+}
