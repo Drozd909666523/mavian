@@ -4,7 +4,7 @@ The release after a missed grab leaves the prop on its original support.
 """
 from mavian import (
     MANNEQUIN, Actor, Box, Ground, Prop, Shot, Style, Watch,
-    grab, key, keys, release, where,
+    grab, key, keys, release,
 )
 
 MODEL = MANNEQUIN.with_poses({
@@ -27,9 +27,9 @@ def make(mode="valid"):
                     name="pedestal", fill="#a6af9b")
     props = [pedestal, cup]
     if mode == "blocked":
-        shoulder = where(actor, 1.0, "arm_r")
-        props.append(Prop(Box(0.6, 0.5, 0.6),
-                          at=(shoulder[0], shoulder[1] - 0.25, shoulder[2]),
+        # A slab on the pedestal blocks the grasp envelope, not the actor.
+        props.append(Prop(Box(0.13, 0.24, 0.04),
+                          at=(-0.36, 1.0, 0.20),
                           name="barrier", fill="#b1a8a0"))
     return Shot(
         actors=[actor], props=props, fps=24, length=3.0, size=(800, 600), draw_on=1,

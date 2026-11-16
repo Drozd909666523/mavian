@@ -179,7 +179,9 @@ animated, deformed pose. Difficult prop-action intervals receive a deterministic
 arm route with sampled clearance against props, the torso and the head. The
 held item's volume can lift the wrist above a support without sliding the grip.
 Automatic `onto=prop` placement accounts for the item's yawed footprint and grip
-offset; explicit point targets keep their authored coordinates.
+offset; explicit point targets keep their authored coordinates. Naming a support
+does not request the item's original position. Use `onto=(x, y, z)` to specify
+an exact placement point.
 
 Contact diagnostics distinguish satisfied, blending, unreachable, conflicting,
 invalid and obstructed goals. `volume:` and `self:` entries identify unresolved

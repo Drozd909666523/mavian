@@ -486,6 +486,52 @@ fn grasp_fixture_attaches_only_the_clear_reachable_unlocked_attempt() {
     }
 }
 
+
+#[test]
+fn blocked_grasp_barrier_stays_outside_the_actor_body_and_the_cup() {
+    use mavian_rig::Part;
+    use mavian_scene::{GrabStatus, obstacle::Obstacle};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shots/grasp.py");
+    let (_, s) = mavian_py::load_file(&path).unwrap().into_iter().find(|(name, _)| name == "blocked").unwrap();
+    assert_eq!(s.grab_reports[0].status, GrabStatus::Obstructed);
+    let barrier = s.props.iter().position(|p| p.name == "barrier").unwrap();
+    let cup = s.props.iter().position(|p| p.name == "cup").unwrap();
+    let actor = &s.actors[0];
+    let (pos, rot) = s.prop_rest(barrier, 0.0);
+    let obstacle = Obstacle { prop: barrier, pos, rot, shape: s.props[barrier].shape.clone() };
+    let mut minimum = f64::INFINITY;
+    for n in 0..=720 {
+        let w = n as f64 / 240.0;
+        let fig = s.posed(0, w).0;
+        assert!(s.obstacle_reports(w).iter().all(|r| r.prop != barrier), "arm enters barrier at {w}");
+        for part in &actor.model.parts {
+            let gap = match *part {
+                Part::Body { a, b, rx, rz, .. } => obstacle.capsule(fig.joints[a], rx.0.max(rz.0), fig.joints[b], rx.1.max(rz.1)).0,
+                Part::Head { joint, radius, .. } => obstacle.distance(fig.joints[joint]).0 - radius,
+                _ => continue,
+            };
+            minimum = minimum.min(gap);
+            assert!(gap >= 0.0, "barrier intersects body/head at {w}: {gap}");
+        }
+        assert_eq!(s.prop_rest(cup, w).0, s.props[cup].at, "rejected grab moves cup at {w}");
+    }
+    let start = actor.figure(0.0);
+    for name in ["arm_l", "arm_r"] {
+        let side = name.rsplit('_').next().unwrap();
+        let hand = actor.model.rig.joint(&format!("hand_{side}")).unwrap();
+        let chain = mavian_scene::actions::chain(actor, hand).unwrap();
+        for k in 0..2 {
+            assert!(obstacle.capsule(start.joints[chain[k]], [0.062, 0.050][k], start.joints[chain[k+1]], [0.050, 0.052][k]).0 >= 0.0,
+                "barrier intersects the authored resting arm {side}");
+        }
+    }
+    let mavian_scene::Shape::Box { sx, sy, sz } = s.props[cup].shape else { panic!() };
+    let center = s.props[cup].at + mavian_core::Vec3::UP * (sy * 0.5);
+    let radius = (sx * sx + sy * sy + sz * sz).sqrt() * 0.5;
+    assert!(obstacle.distance(center).0 > radius, "barrier intersects the resting cup's bounding sphere");
+    eprintln!("blocked-grasp minimum conservative torso/head separation: {minimum:.9} m");
+}
+
 #[test]
 fn grasp_preserves_clear_carry_and_has_a_continuous_pick_place_return() {
     let mut s = load("grasp");
