@@ -10,6 +10,7 @@ pub mod camera;
 pub mod contact;
 pub mod effects;
 pub mod face;
+mod grip;
 pub mod ik;
 pub mod moves;
 pub mod obstacle;
@@ -32,3 +33,4 @@ pub use style::Style;
 
 pub use approach::{Approach, StepReport, StepStatus};
 pub use contact::{Contact, ContactReport, ContactStatus, Priority};
+pub use grip::{GrabReport, GrabStatus};

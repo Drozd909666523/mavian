@@ -236,7 +236,11 @@ pub(crate) fn prepare(actors: &mut [Actor], props: &[Prop], action: &Action, act
     let raw = a.figure(at);
     let root = raw.joints[a.model.root];
     let (normal, tangent) = actions::facing_side(pos, &rot, root);
-    let face = actions::surface(&p.shape, normal, height);
+    let face = if hands.len() == 1 {
+        crate::grip::surface(a, hands[0], &p.shape, normal, height, line)
+    } else {
+        actions::surface(&p.shape, normal, height)
+    };
     let left = Mat3::rot_y(a.facing.at(at)) * Vec3 { x: 1., y: 0., z: 0. };
     let mut local = [face + tangent * spread, face - tangent * spread];
     if (rot * local[0]).dot(left) < 0. {

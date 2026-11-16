@@ -164,3 +164,14 @@ pub fn contacts(shot: &Shot, tl: &Timeline) -> Report {
         text: format!("contacts: {count} unresolved samples, maximum residual {:.1} mm (frame {at})", worst * 1000.0),
     }
 }
+
+/// Acquisition decisions are independent of the frame grid; a failed attempt
+/// remains visible even after its reach constraint has faded out.
+pub fn grabs(shot: &Shot) -> Report {
+    let failed: Vec<_> = shot.grab_reports.iter().filter(|r| !r.attached()).collect();
+    let details = failed.iter().map(|r| format!("{} at {:.3}s: {:?} ({:.1} mm)", shot.props[r.prop].name, r.at, r.status, r.error * 1000.0))
+        .collect::<Vec<_>>().join("; ");
+    Report { status: if failed.is_empty() { Status::Ok } else { Status::Warn },
+        text: format!("grabs: {} attached, {} rejected{}{}", shot.grab_reports.len() - failed.len(), failed.len(),
+            if details.is_empty() { "" } else { "; " }, details) }
+}

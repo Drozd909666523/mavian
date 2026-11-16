@@ -432,3 +432,56 @@ fn interact_push_transitions_keep_elbows_on_the_authored_side() {
     eprintln!("push transitions: maximum forward bend {worst_forward:.6}, maximum bend change at 480 Hz {maximum_bend_change:.6}");
     assert!(maximum_bend_change < 0.05, "elbow bend changes discontinuously: {maximum_bend_change}");
 }
+
+#[test]
+fn original_interact_acquires_the_stationary_cup_before_carrying_it() {
+    use mavian_scene::{GrabStatus, Motion};
+    let mut s = load("interact");
+    assert_eq!(s.grab_reports.len(), 1);
+    let r = s.grab_reports[0].clone();
+    assert_eq!(r.status, GrabStatus::Attached);
+    assert!(r.error < 1e-8);
+    assert!((s.posed(r.actor, r.at).0.joints[r.hand] - r.target).length() < 1e-8);
+    let before = s.prop_rest(r.prop, r.at - 1e-6);
+    let at = s.prop_rest(r.prop, r.at);
+    let after = s.prop_rest(r.prop, r.at + 1e-6);
+    assert!((before.0 - at.0).length() < 1e-8);
+    assert!((before.0 - after.0).length() < 1e-4);
+    assert_eq!(before.1, at.1);
+    assert!(matches!(s.props[r.prop].segment(r.at), Some(Motion::Held { .. })));
+    let saved = s.grab_reports.clone();
+    s.compile().unwrap();
+    assert_eq!(s.grab_reports, saved);
+}
+
+#[test]
+fn grasp_fixture_attaches_only_the_clear_reachable_unlocked_attempt() {
+    use mavian_scene::{GrabStatus, Motion};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shots/grasp.py");
+    for (name, mut s) in mavian_py::load_file(&path).unwrap() {
+        assert_eq!(s.grab_reports.len(), 1);
+        let r = &s.grab_reports[0];
+        let expected = match name.as_str() {
+            "base" => GrabStatus::Attached,
+            "far" => GrabStatus::Unreachable,
+            "locked" => GrabStatus::PoseLocked,
+            "blocked" => GrabStatus::Obstructed,
+            _ => panic!("unexpected variant {name}"),
+        };
+        assert_eq!(r.status, expected, "{name}: {r:?}");
+        let prop = r.prop;
+        assert_eq!(matches!(s.props[prop].segment(1.6), Some(Motion::Held { .. })), name == "base");
+        if name != "base" {
+            assert!(s.props[prop].motion.is_empty());
+            for w in [1.0, 1.6, 2.4, 2.9] { assert_eq!(s.prop_rest(prop, w).0, s.props[prop].at); }
+        }
+        let saved = s.grab_reports.clone();
+        let frames: Vec<_> = (0..72).map(|n| (s.posed(0, n as f64 / 24.0).0, s.prop_rest(prop, n as f64 / 24.0))).collect();
+        s.compile().unwrap();
+        assert_eq!(s.grab_reports, saved);
+        for (n, (fig, pose)) in frames.into_iter().enumerate().rev() {
+            assert_eq!(fig, s.posed(0, n as f64 / 24.0).0);
+            assert_eq!(pose, s.prop_rest(prop, n as f64 / 24.0));
+        }
+    }
+}

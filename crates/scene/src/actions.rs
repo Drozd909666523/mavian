@@ -160,7 +160,7 @@ pub fn chain(actor: &Actor, hand: usize) -> Result<[usize; 3], String> {
     Ok([shoulder, elbow, hand])
 }
 
-fn root_at(actor: &Actor, w: f64) -> Vec3 {
+pub(crate) fn root_at(actor: &Actor, w: f64) -> Vec3 {
     actor.figure(w).joints[actor.model.root]
 }
 
@@ -184,7 +184,7 @@ pub(crate) fn surface(shape: &Shape, n: Vec3, height: f64) -> Vec3 {
 }
 
 /// The target's weight: up to 1 over `reach` before t0, held to t1, down over `settle`.
-fn window(t0: f64, t1: f64, reach: f64, settle: f64) -> Track<f64> {
+pub(crate) fn window(t0: f64, t1: f64, reach: f64, settle: f64) -> Track<f64> {
     Keys::new(Ease::InOut).key(t0 - reach, 0.0).key(t0, 1.0).key(t1, 1.0).key(t1 + settle, 0.0).into()
 }
 
@@ -207,12 +207,30 @@ fn near_spot(support: &Prop, t: f64, toward: Vec3, world: &World) -> Vec3 {
 /// What strikes add to the shot: hit-stops, impact frames, shakes.
 pub type ShotEffects = (Vec<(f64, f64)>, Vec<f64>, Vec<crate::camera::Shake>);
 
+/// Compile standalone arrays with the default drawing style. Prefer
+/// `Shot::compile` when the scene changes line width or uses strike actions.
 pub fn compile(actors: &mut [Actor], props: &mut [Prop], actions: &[Action]) -> Result<ShotEffects, String> {
-    compile_with_line(actors, props, actions, crate::Style::default().line)
+    // Move actors rather than cloning their world-dependent pose caches.
+    let owned = actors
+        .iter_mut()
+        .map(|a| {
+            let empty = Actor::new(a.model.clone());
+            std::mem::replace(a, empty)
+        })
+        .collect();
+    let mut shot = crate::Shot { actors: owned, props: props.to_vec(), actions: actions.to_vec(), ..crate::Shot::default() };
+    let result = compile_shot(&mut shot);
+    for (a, compiled) in actors.iter_mut().zip(shot.actors) {
+        *a = compiled;
+    }
+    props.clone_from_slice(&shot.props);
+    result
 }
 
-pub(crate) fn compile_with_line(actors: &mut [Actor], props: &mut [Prop], actions: &[Action], line: f64) -> Result<ShotEffects, String> {
+pub(crate) fn compile_shot(shot: &mut crate::Shot) -> Result<ShotEffects, String> {
     let mut fx: ShotEffects = (Vec::new(), Vec::new(), Vec::new());
+    shot.grab_reports.clear();
+    let (actors, props) = (&mut shot.actors, &mut shot.props);
     for a in actors.iter_mut() {
         a.reaches.clear();
         a.auto_contacts.clear();
@@ -227,19 +245,7 @@ pub(crate) fn compile_with_line(actors: &mut [Actor], props: &mut [Prop], action
         p.motion.clear();
         p.contacts.clear();
     }
-    let mut order: Vec<&Action> = actions.iter().collect();
-    order.sort_by(|a, b| a.time().total_cmp(&b.time()));
-    for action in order {
-        crate::approach::prepare(actors, props, action, actions, line)?;
-        if let Action::Strike(s) = action {
-            strike(actors, props, s, &mut fx)?;
-        } else {
-            apply(actors, props, action)?;
-        }
-        for a in actors.iter_mut() {
-            a.forget();
-        }
-    }
+    // Acquisition must see the same actor-avoidance constraints as rendering.
     if actors.len() > 1 {
         for i in 0..actors.len() {
             let chains: Vec<[usize; 3]> =
@@ -255,7 +261,22 @@ pub(crate) fn compile_with_line(actors: &mut [Actor], props: &mut [Prop], action
             actors[i].forget();
         }
     }
-    plan_contact_routes(actors, props, line);
+    let actions = shot.actions.clone();
+    let mut order: Vec<_> = actions.iter().collect();
+    order.sort_by(|a, b| a.time().total_cmp(&b.time()));
+    for action in order {
+        crate::approach::prepare(&mut shot.actors, &shot.props, action, &actions, shot.style.line)?;
+        if let Action::Strike(s) = action {
+            strike(&mut shot.actors, &shot.props, s, &mut fx)?;
+        } else {
+            apply(shot, action)?;
+        }
+        for a in &mut shot.actors {
+            a.forget();
+        }
+    }
+    plan_contact_routes(&mut shot.actors, &shot.props, shot.style.line);
+    crate::grip::verify(shot)?;
     Ok(fx)
 }
 
@@ -528,36 +549,31 @@ fn strike(actors: &mut [Actor], props: &[Prop], s: &Strike, fx: &mut ShotEffects
     Ok(())
 }
 
-fn apply(actors: &mut [Actor], props: &mut [Prop], action: &Action) -> Result<(), String> {
+fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
+    if matches!(action, Action::Grab { .. }) {
+        return crate::grip::grab(shot, action);
+    }
+    let (actors, props) = (&mut shot.actors, &mut shot.props);
     match *action {
-        Action::Grab { actor, hand, prop, at: t, reach, settle, height, .. } => {
-            let world = World { actors, props };
-            let (pos, rot) = props[prop].rest(t, &world);
-            let (n, _) = facing_side(pos, &rot, root_at(&actors[actor], t));
-            let point = pos + rot * surface(&props[prop].shape, n, height);
-            let ch = chain(&actors[actor], hand)?;
-            let mut contact = crate::Contact::new(&format!("grab:{}", props[prop].name), ch, Target::Point(point), t - reach, t + settle);
-            contact.weight = window(t, t, reach, settle);
-            let side = if actors[actor].model.rig.joints()[hand].name.ends_with("_r") { 1.0 } else { -1.0 };
-            contact.pole = Some(Mat3::rot_y(actors[actor].facing.at(t)) * Vec3 { x: 0.4 * side, y: -0.5, z: -0.6 });
-            contact.approach =
-                Some(crate::ik::flat_dir(pos, root_at(&actors[actor], t)) * 0.20 * actors[actor].scale + Vec3::UP * (0.08 * actors[actor].scale));
-            contact.withdrawal = Some((t, contact.approach));
-            actors[actor].auto_contacts.push(contact);
-            actors[actor].forget();
-            let world = World { actors, props };
-            let a = &actors[actor];
-            let hp = a.figure_ik(t, &world).joints[hand];
-            let heading = a.facing.at(t);
-            let offset = Mat3::rot_y(-heading) * (pos - hp);
-            props[prop].contacts.push((t - reach, f64::INFINITY, actor, hand));
-            props[prop].motion.push((t, Motion::Held { actor, hand, offset, yaw: rot.heading() - heading }));
-        }
+        Action::Grab { .. } => unreachable!("grabs are contact-gated"),
         Action::Release { actor, hand, prop, at: t, ref onto, reach, settle } => {
             let world = World { actors, props };
-            let Some(held @ Motion::Held { offset, .. }) = props[prop].segment(t).cloned() else {
+            let Some(held @ Motion::Held { actor: owner, hand: grip, offset, .. }) = props[prop].segment(t).cloned() else {
+                // A missed acquisition leaves its later release without a binding.
+                if shot.grab_reports.iter().rev().find(|r| r.prop == prop && r.actor == actor && r.hand == hand && r.at <= t).is_some_and(|r| !r.attached()) {
+                    return Ok(());
+                }
                 return Err(format!("release at {t}: prop '{}' is not in a hand", props[prop].name));
             };
+            if owner != actor || grip != hand {
+                return Err(format!("release at {t}: prop '{}' is held by a different hand", props[prop].name));
+            }
+            if !matches!(onto, Onto::Nothing)
+                && let Some((acquired, _)) = props[prop].motion.iter().rev().find(|(from, _)| *from <= t + 1e-9)
+                && t - reach < *acquired - 1e-9
+            {
+                return Err(format!("release at {t}: placement reach for '{}' begins before acquisition", props[prop].name));
+            }
             let ch = chain(&actors[actor], hand)?;
             let mut floor = 0.0;
             let place = match onto {

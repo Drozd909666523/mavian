@@ -166,6 +166,14 @@ because of authored motion, reserved contacts, insufficient time or an obstacle.
 The resulting horizontal offset persists in subsequent motion. Inspect the
 decision with the `steps` command.
 
+`grab` attaches only when the final hand reaches the selected surface anchor at
+`at` (within 2 mm) and the grabbing arm has no prop penetration deeper than
+1 mm. The decision is compiled once, so reverse and isolated frame rendering
+produce the same binding. A missed grab leaves the prop in its previous motion;
+a later release without a successful binding does nothing. An occupied hand or
+already-held prop cannot acquire a second binding. `at` remains the authored
+acquisition instant; no automatic waiting or retiming is added.
+
 Contact diagnostics distinguish satisfied, blending, unreachable, conflicting,
 invalid and obstructed goals. A failed target is reported rather than silently
 stretching the limb to reach it.
@@ -176,9 +184,13 @@ stretching the limb to reach it.
 # Show contact targets and residuals; also write contacts.csv
 ./target/release/mavian render shots/contacts.py --contacts
 
-# Inspect contacts or preparation decisions without rendering
+# Inspect contacts, preparation and acquisition decisions without rendering
 ./target/release/mavian contacts shots/interact.py
 ./target/release/mavian steps shots/approach.py
+./target/release/mavian grabs shots/interact.py
+
+# Render the acquisition regression with diagnostics
+./target/release/mavian render shots/grasp.py --contacts
 
 # Render the sketch layer, or export vector lines alongside the usual output
 ./target/release/mavian render shots/interact.py --layers sketch
@@ -188,6 +200,10 @@ stretching the limb to reach it.
 ./target/release/mavian digest shots/three_cams.py
 ./target/release/mavian compare shots/interact.py
 ```
+
+`grabs` prints each acquisition decision and its residual, including failed
+attempts after the reach has ended. `render --contacts` also saves `grabs.csv`.
+The permanent `grasp.py` fixture has `far`, `locked` and `blocked` variants.
 
 `--vector` writes SVG lines to `out/<shot>/lines/`. Sketch mode uses an SVG
 rendering path and produces PNG/video output through the usual pipeline.
@@ -221,9 +237,12 @@ CPU and GPU output can differ slightly at rasterization boundaries.
 
 ## Current limitations
 
-- Prop attachment, release and sliding are scheduled by authored times.
-  A failed contact or blocked preparation does not yet cancel the prop action;
-  contact-triggered events are still planned.
+- Acquisition is checked at the authored instant, without a search for a later
+  contact or finger-level grip simulation. Later actions that invalidate an
+  earlier verified acquisition are rejected during compilation; separate their
+  contact intervals.
+- Release and sliding remain scheduled by authored times. Successful placement
+  and pushing are not yet gated by actual support or palm contact.
 - Preparatory motion is a bounded step with a trailing-foot follow. It does
   not navigate around obstacles, plan multiple steps or simulate balance.
 - Clearance checks use conservative primitives and sampled trajectories,

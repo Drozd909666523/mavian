@@ -1022,7 +1022,8 @@ pub struct PyAction {
     data: ActionData,
 }
 
-/// Take a prop with a hand at `at`: the hand reaches for its near side.
+/// Attempt acquisition at `at`: bind only after a clear final-pose contact.
+/// A missed attempt leaves the prop in its previous motion.
 #[pyfunction]
 #[pyo3(signature = (actor, hand, prop, at, reach = 0.4, settle = 0.35, height = 0.6, auto_step = 0.0, step_duration = 0.8))]
 #[allow(clippy::too_many_arguments)]
@@ -1317,6 +1318,7 @@ impl PyShot {
             wires: self.wires.clone(),
             fires: self.fires.clone(),
             actions: Vec::new(),
+            grab_reports: Vec::new(),
             stops: Vec::new(),
             flashes: Vec::new(),
             auto_shakes: Vec::new(),

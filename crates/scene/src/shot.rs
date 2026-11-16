@@ -101,6 +101,8 @@ pub struct Shot {
     /// intent: grab, put down, push, strike — `compile` turns them into hand
     /// targets, layers, prop motion and the below
     pub actions: Vec<Action>,
+    /// Deterministic acquisition decisions, including failed attempts.
+    pub grab_reports: Vec<crate::GrabReport>,
     /// made by strikes: hit-stops (when, how long in shot seconds), impact
     /// frames (when), camera shakes
     pub stops: Vec<(f64, f64)>,
@@ -133,6 +135,7 @@ impl Default for Shot {
             wires: Vec::new(),
             fires: Vec::new(),
             actions: Vec::new(),
+            grab_reports: Vec::new(),
             stops: Vec::new(),
             flashes: Vec::new(),
             auto_shakes: Vec::new(),
@@ -245,7 +248,7 @@ impl Shot {
     /// Turn the actions into hand targets and prop motion (again from
     /// scratch, so it can be called after any change of the description).
     pub fn compile(&mut self) -> Result<(), ShotError> {
-        let out = crate::actions::compile_with_line(&mut self.actors, &mut self.props, &self.actions, self.style.line).map_err(ShotError)?;
+        let out = crate::actions::compile_shot(self).map_err(ShotError)?;
         (self.stops, self.flashes, self.auto_shakes) = out;
         Ok(())
     }
