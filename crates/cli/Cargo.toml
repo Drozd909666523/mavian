@@ -1,0 +1,23 @@
+[package]
+name = "mavian-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mavian"
+path = "src/main.rs"
+
+[dependencies]
+mavian-frame.workspace = true
+mavian-rig.workspace = true
+mavian-core.workspace = true
+mavian-graph.workspace = true
+mavian-scene.workspace = true
+mavian-render.workspace = true
+mavian-check.workspace = true
+mavian-shots.workspace = true
+mavian-py.workspace = true
+mavian-gpu.workspace = true
+mavian-cpu.workspace = true
+png = "0.18.1"

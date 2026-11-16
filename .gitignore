@@ -1,0 +1,12 @@
+/target
+/out
+
+__pycache__/
+*.py[cod]
+
+.env
+.env.*
+!.env.example
+
+*.md
+!README.md

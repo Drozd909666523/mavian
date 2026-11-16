@@ -1,0 +1,20 @@
+[package]
+name = "mavian-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mavian-core.workspace = true
+mavian-rig.workspace = true
+mavian-scene.workspace = true
+mavian-frame.workspace = true
+wgpu = { version = "=30.0.1", default-features = false, features = ["vulkan", "wgsl"] }
+pollster = "1.0.1"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+mavian-models.workspace = true
+mavian-cpu.workspace = true
+naga = { version = "30.0.2", features = ["wgsl-in"] }
+mavian-py.workspace = true

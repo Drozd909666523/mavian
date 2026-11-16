@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+mavian-core = { path = "crates/core" }
+mavian-graph = { path = "crates/graph" }
+mavian-rig = { path = "crates/rig" }
+mavian-scene = { path = "crates/scene" }
+mavian-render = { path = "crates/render" }
+mavian-check = { path = "crates/check" }
+mavian-models = { path = "crates/models" }
+mavian-shots = { path = "crates/shots" }
+mavian-py = { path = "crates/py" }
+mavian-gpu = { path = "crates/gpu" }
+mavian-frame = { path = "crates/frame" }
+mavian-cpu = { path = "crates/cpu" }
+
+[profile.release]
+debug = 1

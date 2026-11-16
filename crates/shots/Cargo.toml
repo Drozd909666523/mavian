@@ -1,0 +1,11 @@
+[package]
+name = "mavian-shots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mavian-core.workspace = true
+mavian-rig.workspace = true
+mavian-scene.workspace = true
+mavian-models.workspace = true

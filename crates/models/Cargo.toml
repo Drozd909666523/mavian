@@ -1,0 +1,9 @@
+[package]
+name = "mavian-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mavian-core.workspace = true
+mavian-rig.workspace = true

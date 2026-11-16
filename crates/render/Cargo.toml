@@ -1,0 +1,16 @@
+[package]
+name = "mavian-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mavian-cpu.workspace = true
+mavian-frame.workspace = true
+mavian-core.workspace = true
+mavian-graph.workspace = true
+mavian-rig.workspace = true
+mavian-scene.workspace = true
+
+[dev-dependencies]
+mavian-models.workspace = true

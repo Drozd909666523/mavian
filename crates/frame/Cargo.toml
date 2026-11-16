@@ -1,0 +1,11 @@
+[package]
+name = "mavian-frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mavian-core.workspace = true
+mavian-rig.workspace = true
+mavian-scene.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
