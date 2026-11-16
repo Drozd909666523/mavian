@@ -184,13 +184,9 @@ impl Shot {
                     _ => false,
                 }
             }
-            if self.props.iter().any(|p| p.segment(w).is_some_and(|m| held_by(m, index, hand))) {
-                let side = if side == "r" { 1.0 } else { -1.0 };
-                let pole = Mat3::rot_y(actor.facing.at(w)) * Vec3 { x: 0.4 * side, y: -0.5, z: -0.6 };
-                let reference = out.clone();
-                let goal = out.joints[hand];
-                crate::contact::place(&mut out.joints, &reference, chain, goal, Some(pole));
-            }
+            let holding = self.props.iter().any(|p| p.segment(w).is_some_and(|m| held_by(m, index, hand)));
+            // Holding a prop does not by itself authorize a new bend plane.
+            // Preserve the solved/authored arm unless clearance requires a change.
             let obstacles = self.arm_obstacles(index, hand, w, &out);
             let radii = chain.map(|j| joint_radius(actor, j, self.style.line));
             if clearance(&obstacles, &out.joints, chain, radii) >= -0.0001 {
@@ -199,6 +195,18 @@ impl Shot {
             let original = out.clone();
             let root = out.joints[chain[0]];
             let original_goal = out.joints[hand];
+            let outward = if holding {
+                actor.model.rig.parent(chain[0]).map(|parent| {
+                    original.rots[parent] * Vec3 { x: actor.model.rig.joints()[chain[0]].side, y: 0.0, z: 0.0 }
+                }).unwrap_or(Vec3::ZERO)
+            } else { Vec3::ZERO };
+            let cost = |candidate: &mavian_rig::Figure| {
+                let hand_delta = candidate.joints[hand] - original_goal;
+                let elbow_delta = candidate.joints[chain[1]] - original.joints[chain[1]];
+                // Prefer the outside route when a held prop requires clearance.
+                let medial = (root - candidate.joints[chain[1]]).dot(outward).max(0.0);
+                hand_delta.dot(hand_delta) * 8.0 + elbow_delta.dot(elbow_delta) + medial * medial * 8.0
+            };
             let mut goal = original_goal;
             let mut best = out.clone();
             let mut best_clear = clearance(&obstacles, &best.joints, chain, radii);
@@ -229,8 +237,7 @@ impl Shot {
                     let mut candidate = original.clone();
                     crate::contact::place(&mut candidate.joints, &original, chain, goal, Some(pole));
                     let free = clearance(&obstacles, &candidate.joints, chain, radii);
-                    let cost = (candidate.joints[hand] - original_goal).dot(candidate.joints[hand] - original_goal) * 8.0
-                        + (candidate.joints[chain[1]] - original.joints[chain[1]]).dot(candidate.joints[chain[1]] - original.joints[chain[1]]);
+                    let cost = cost(&candidate);
                     if (free >= -0.0001 && (best_clear < -0.0001 || cost < best_cost)) || (best_clear < -0.0001 && free > best_clear) {
                         best = candidate;
                         best_clear = free;
@@ -248,9 +255,7 @@ impl Shot {
                             let mut candidate = original.clone();
                             crate::contact::place(&mut candidate.joints, &original, chain, goal, Some(pole));
                             let free = clearance(&obstacles, &candidate.joints, chain, radii);
-                            let cost = (candidate.joints[hand] - original_goal).dot(candidate.joints[hand] - original_goal) * 8.0
-                                + (candidate.joints[chain[1]] - original.joints[chain[1]])
-                                    .dot(candidate.joints[chain[1]] - original.joints[chain[1]]);
+                            let cost = cost(&candidate);
                             if free >= -0.0001 && cost < best_cost {
                                 best = candidate;
                                 best_clear = free;

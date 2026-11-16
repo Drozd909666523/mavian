@@ -131,7 +131,7 @@ pub(crate) fn grab(shot: &mut Shot, action: &Action) -> Result<(), String> {
     let a = &mut shot.actors[actor];
     let mut contact = Contact::new(&format!("grab:{}", shot.props[prop].name), ch, Target::Point(point), t - reach, t + settle);
     contact.weight = actions::window(t, t, reach, settle);
-    let side = if a.model.rig.joints()[hand].name.ends_with("_r") { 1.0 } else { -1.0 };
+    let side = if a.model.rig.joints()[hand].name.ends_with("_r") { -1.0 } else { 1.0 };
     contact.pole = Some(Mat3::rot_y(a.facing.at(t)) * Vec3 { x: 0.4 * side, y: -0.5, z: -0.6 });
     contact.approach = Some(crate::ik::flat_dir(pos, actions::root_at(a, t)) * 0.20 * a.scale + Vec3::UP * (0.08 * a.scale));
     contact.withdrawal = Some((t, contact.approach));

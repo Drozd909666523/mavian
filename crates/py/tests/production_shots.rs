@@ -485,3 +485,45 @@ fn grasp_fixture_attaches_only_the_clear_reachable_unlocked_attempt() {
         }
     }
 }
+
+#[test]
+fn grasp_carry_preserves_the_clear_authored_elbow_and_has_no_holding_branch_flip() {
+    let mut s = load("grasp");
+    let actor = &s.actors[0];
+    let hand = actor.model.rig.joint("hand_r").unwrap();
+    let chain = mavian_scene::actions::chain(actor, hand).unwrap();
+    let mut worst = 0.0f64;
+    for n in 348..=432 {
+        let w = n as f64 / 240.0;
+        let raw = actor.figure(w);
+        let actual = s.posed(0, w).0;
+        let drift = (actual.joints[chain[1]] - raw.joints[chain[1]]).length();
+        worst = worst.max(drift);
+        assert!(drift < 1e-8, "clear carrying elbow was overridden at {w}: authored {:?}, actual {:?}, drift {drift}",
+            raw.joints[chain[1]], actual.joints[chain[1]]);
+        assert!((actual.joints[hand] - raw.joints[hand]).length() < 1e-8);
+    }
+    eprintln!("grasp clear-carry maximum authored elbow displacement: {worst:.9} m");
+    let samples: Vec<_> = (0..=720).map(|n| s.posed(0, n as f64 / 240.0).0).collect();
+    let mut largest = 0.0f64;
+    // Acquisition, lifting and carrying while the prop is bound to this hand.
+    for n in 240..576 {
+        let pair = &samples[n..=n + 1];
+        for j in chain {
+            largest = largest.max((pair[1].joints[j] - pair[0].joints[j]).length());
+        }
+    }
+    eprintln!("grasp maximum holding arm displacement per 1/240 s: {largest:.9} m");
+    assert!(largest < 0.04, "holding arm switches clearance branches: {largest}");
+    // Post-release avoidance is measured separately; it has no holding-side bias.
+    let mut after_release = (0.0f64, 0.0f64);
+    for n in 576..720 {
+        let delta = (samples[n + 1].joints[chain[1]] - samples[n].joints[chain[1]]).length();
+        if delta > after_release.0 { after_release = (delta, (n + 1) as f64 / 240.0); }
+    }
+    eprintln!("grasp post-release maximum elbow displacement: {:.9} m at {:.9} s (separate remaining limit)", after_release.0, after_release.1);
+    s.compile().unwrap();
+    for n in (0..=720).rev() {
+        assert_eq!(samples[n], s.posed(0, n as f64 / 240.0).0);
+    }
+}

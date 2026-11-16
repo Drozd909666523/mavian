@@ -596,7 +596,7 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
             if let Some(r) = new_reach {
                 let mut contact = crate::Contact::new(&format!("release:{}", props[prop].name), r.chain, r.target, t - reach, t + settle);
                 contact.weight = r.weight;
-                let side = if actors[actor].model.rig.joints()[hand].name.ends_with("_r") { 1.0 } else { -1.0 };
+                let side = if actors[actor].model.rig.joints()[hand].name.ends_with("_r") { -1.0 } else { 1.0 };
                 contact.pole = Some(Mat3::rot_y(actors[actor].facing.at(t)) * Vec3 { x: 0.4 * side, y: -0.5, z: -0.6 });
                 let goal = contact.target.at(t, &World { actors, props });
                 contact.approach = Some(
