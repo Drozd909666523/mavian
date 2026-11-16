@@ -17,7 +17,8 @@ def make(mode="valid"):
         0.0: key("stand", plant="l"),
         1.0: key("stand", plant="l"),
         1.45: key("carry", plant="l"),
-        2.7: key("carry", plant="l"),
+        1.8: key("carry", plant="l"),
+        2.75: key("stand", plant="l"),
     }))
     z = 1.6 if mode == "far" else 0.35
     cup = Prop(Box(0.13, 0.17, 0.13), at=(-0.30, 1.0, z),

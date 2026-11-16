@@ -23,8 +23,6 @@ pub const HAND_R: f64 = 0.065;
 const HOVER: f64 = 0.07;
 /// which share of the putting-down motion is the vertical lowering
 const DESCEND: f64 = 0.4;
-/// a hand puts a thing at the near edge of a support's top, this far in
-const EDGE_MARGIN: f64 = 0.11;
 
 /// Where a released thing goes.
 #[derive(Clone, Debug)]
@@ -188,14 +186,21 @@ pub(crate) fn window(t0: f64, t1: f64, reach: f64, settle: f64) -> Track<f64> {
     Keys::new(Ease::InOut).key(t0 - reach, 0.0).key(t0, 1.0).key(t1, 1.0).key(t1 + settle, 0.0).into()
 }
 
-/// The spot on a support's top nearest the character (in from the edge):
-/// "put it on the crate" — at the near edge, where the hand reaches.
-fn near_spot(support: &Prop, t: f64, toward: Vec3, world: &World) -> Vec3 {
+/// Clamp the shoulder/grip-aligned item anchor onto the support, keeping
+/// its yawed footprint inside the edges with a 20 mm inset when it fits.
+fn near_spot(support: &Prop, object: &Prop, object_rot: Mat3, t: f64, desired: Vec3, world: &World) -> Vec3 {
     let (pos, rot) = support.rest(t, world);
     match support.shape {
         Shape::Box { sx, sy, sz } => {
-            let d = rot.transpose() * (toward - pos);
-            let (hx, hz) = ((sx / 2.0 - EDGE_MARGIN).max(0.0), (sz / 2.0 - EDGE_MARGIN).max(0.0));
+            let relative = rot.transpose() * object_rot;
+            let (rx, rz) = match object.shape {
+                Shape::Box { sx, sz, .. } => (
+                    0.5 * (sx * relative.col(0).x.abs() + sz * relative.col(2).x.abs()),
+                    0.5 * (sx * relative.col(0).z.abs() + sz * relative.col(2).z.abs())),
+                Shape::Sphere { r } => (r, r),
+            };
+            let d = rot.transpose() * (desired - pos);
+            let (hx, hz) = ((sx / 2.0 - rx - 0.02).max(0.0), (sz / 2.0 - rz - 0.02).max(0.0));
             pos + rot * Vec3 { x: d.x.clamp(-hx, hx), y: sy, z: d.z.clamp(-hz, hz) }
         }
         Shape::Sphere { .. } => support.top_point(t, world),
@@ -239,6 +244,7 @@ pub(crate) fn compile_shot(shot: &mut crate::Shot) -> Result<ShotEffects, String
         a.recoils.clear();
         a.approach_steps.clear();
         a.step_reports.clear();
+        a.clearance_guides.clear();
         a.forget();
     }
     for p in props.iter_mut() {
@@ -276,6 +282,9 @@ pub(crate) fn compile_shot(shot: &mut crate::Shot) -> Result<ShotEffects, String
         }
     }
     plan_contact_routes(&mut shot.actors, &shot.props, shot.style.line);
+    crate::contact::plan_poles(&mut shot.actors, &shot.props);
+    crate::grip::verify(shot)?;
+    shot.plan_arm_clearance()?;
     crate::grip::verify(shot)?;
     Ok(fx)
 }
@@ -287,7 +296,7 @@ fn plan_contact_routes(actors: &mut [Actor], props: &[Prop], line: f64) {
     for actor in 0..actors.len() {
         for index in 0..actors[actor].auto_contacts.len() {
             let c = actors[actor].auto_contacts[index].clone();
-            let Some((split, _)) = c.withdrawal else { continue };
+            let Some((split, withdrawal)) = c.withdrawal else { continue };
             actors[actor].auto_contacts[index].approach = None;
             actors[actor].auto_contacts[index].withdrawal = Some((split, None));
             for a in actors.iter_mut() {
@@ -327,7 +336,7 @@ fn plan_contact_routes(actors: &mut [Actor], props: &[Prop], line: f64) {
             let inbound = blocked(c.from, split);
             let outbound = blocked(split, c.to);
             actors[actor].auto_contacts[index].approach = if inbound { c.approach } else { None };
-            actors[actor].auto_contacts[index].withdrawal = Some((split, if outbound { c.approach } else { None }));
+            actors[actor].auto_contacts[index].withdrawal = Some((split, if outbound { withdrawal } else { None }));
             for a in actors.iter_mut() {
                 a.forget();
             }
@@ -553,6 +562,9 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
     if matches!(action, Action::Grab { .. }) {
         return crate::grip::grab(shot, action);
     }
+    let endpoints = if let Action::Release { actor, hand, at, reach, settle, .. } = *action {
+        Some((shot.deformed(actor, at - reach).0.joints[hand], shot.deformed(actor, at + settle).0.joints[hand]))
+    } else { None };
     let (actors, props) = (&mut shot.actors, &mut shot.props);
     match *action {
         Action::Grab { .. } => unreachable!("grabs are contact-gated"),
@@ -579,7 +591,10 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
             let place = match onto {
                 Onto::Nothing => None,
                 Onto::Point(p) => Some(*p),
-                Onto::Prop(s) => Some(near_spot(&props[*s], t, actors[actor].figure(t).joints[ch[0]], &world)),
+                Onto::Prop(s) => {
+                    let desired = actors[actor].figure(t).joints[ch[0]] + Mat3::rot_y(actors[actor].facing.at(t)) * offset;
+                    Some(near_spot(&props[*s], &props[prop], held.at(t, &world).1, t, desired, &world))
+                },
             };
             let mut new_reach = None;
             if let Some(place) = place {
@@ -596,13 +611,16 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
             if let Some(r) = new_reach {
                 let mut contact = crate::Contact::new(&format!("release:{}", props[prop].name), r.chain, r.target, t - reach, t + settle);
                 contact.weight = r.weight;
+                contact.approach_from = Some(endpoints.unwrap().0);
                 let side = if actors[actor].model.rig.joints()[hand].name.ends_with("_r") { -1.0 } else { 1.0 };
                 contact.pole = Some(Mat3::rot_y(actors[actor].facing.at(t)) * Vec3 { x: 0.4 * side, y: -0.5, z: -0.6 });
                 let goal = contact.target.at(t, &World { actors, props });
                 contact.approach = Some(
-                    crate::ik::flat_dir(goal, root_at(&actors[actor], t)) * 0.25 * actors[actor].scale + Vec3::UP * (0.12 * actors[actor].scale),
+                    crate::ik::flat_dir(goal, actors[actor].figure(t).joints[ch[0]]) * 0.25 * actors[actor].scale + Vec3::UP * (0.12 * actors[actor].scale),
                 );
-                contact.withdrawal = Some((t, contact.approach));
+                let return_to = endpoints.unwrap().1;
+                contact.return_to = Some((t, return_to));
+                contact.withdrawal = Some((t, Some(Vec3 { y: 0.0, ..return_to - goal })));
                 actors[actor].auto_contacts.push(contact);
                 actors[actor].forget();
                 props[prop].motion.push((t - reach, Motion::Above { held: Box::new(held.clone()), floor }));

@@ -25,10 +25,15 @@ pub struct Contact {
     pub priority: Priority,
     pub tolerance: f64,
     pub pole: Option<Vec3>,
+    pub(crate) pole_turn: Option<Track<f64>>,
     /// Target-relative waypoint for a curved approach and withdrawal.
     pub approach: Option<Vec3>,
+    /// Fixed start of an action-owned reach; authored contacts use live FK.
+    pub(crate) approach_from: Option<Vec3>,
     /// Action-generated return route; authored approach offsets remain symmetric.
     pub(crate) withdrawal: Option<(f64, Option<Vec3>)>,
+    /// Fixed authored wrist endpoint for a generated action return phase.
+    pub(crate) return_to: Option<(f64, Vec3)>,
     /// An attached toe: preserve this vector from the ankle after solving.
     pub follower: Option<(usize, Vec3)>,
 }
@@ -44,8 +49,11 @@ impl Contact {
             priority: Priority::Contact,
             tolerance: 0.002,
             pole: None,
+            pole_turn: None,
             approach: None,
+            approach_from: None,
             withdrawal: None,
+            return_to: None,
             follower: None,
         }
     }
@@ -58,7 +66,8 @@ impl Contact {
             Some((at, offset)) if w > at => offset,
             _ => self.approach,
         };
-        let start = reference.joints[self.chain[2]];
+        let start = self.return_to.filter(|(at, _)| w > *at)
+            .map_or(self.approach_from.unwrap_or(reference.joints[self.chain[2]]), |(_, p)| p);
         if let Some(offset) = offset {
             start.lerp(target + offset, weight).lerp((target + offset).lerp(target, weight), weight)
         } else {
@@ -254,7 +263,12 @@ fn solve_protected(
                 if from.length() < 1e-8 || to.length() < 1e-8 {
                     return p;
                 }
-                let angle = mavian_core::m::atan2(direction.dot(from.cross(to)), from.dot(to)) * weight;
+                let mut angle = mavian_core::m::atan2(direction.dot(from.cross(to)), from.dot(to));
+                if let Some(turn) = &contact.pole_turn {
+                    let tau = std::f64::consts::TAU;
+                    angle += ((turn.at(w) - angle) / tau).round() * tau;
+                }
+                let angle = angle * weight;
                 from * mavian_core::m::cos(angle) + direction.cross(from) * mavian_core::m::sin(angle)
             });
             // A previous reach may have fully straightened this chain. Keep
@@ -377,6 +391,8 @@ impl crate::Shot {
                 },
             ));
         }
+        reports.extend(self.held_prop_reports(w));
+        reports.extend(self.self_collision_reports(w));
         reports
     }
 
@@ -555,4 +571,68 @@ pub fn validate_dependencies(w: f64, world: &World) -> Result<(), String> {
         visit(i, w, world, &mut BTreeSet::new(), &mut done)?;
     }
     Ok(())
+}
+
+/// Keep the signed pole swing continuous when the authored bend crosses the
+/// atan2 branch cut. Sampling chooses a turn count, not a different endpoint.
+pub(crate) fn plan_poles(actors: &mut [crate::Actor], props: &[crate::Prop]) {
+    use mavian_core::{Ease, Keys};
+    for actor in 0..actors.len() {
+        let mut planned = Vec::new();
+        for (index, c) in actors[actor].auto_contacts.iter().enumerate() {
+            let Some(pole) = c.pole else { continue };
+            let samples = ((c.to - c.from) * 120.0).ceil().max(1.0) as usize;
+            let mut keys = Keys::new(Ease::Linear);
+            let mut previous = None;
+            for n in 0..=samples {
+                let w = c.from + (c.to - c.from) * n as f64 / samples as f64;
+                let reference = actors[actor].figure(w);
+                let target = c.target.at(w, &World { actors, props });
+                let goal = c.goal(&reference, target, w);
+                let direction = (goal - reference.joints[c.chain[0]]).norm();
+                let bend = carried_bend(&reference, c.chain, direction, Some(pole));
+                let from = (bend - direction * bend.dot(direction)).norm();
+                let to = (pole - direction * pole.dot(direction)).norm();
+                let mut angle = mavian_core::m::atan2(direction.dot(from.cross(to)), from.dot(to));
+                if let Some(old) = previous {
+                    let tau = std::f64::consts::TAU;
+                    let turns: f64 = (old - angle) / tau;
+                    angle += turns.round() * tau;
+                }
+                keys = keys.key(w, angle);
+                previous = Some(angle);
+            }
+            planned.push((index, keys.into()));
+        }
+        for (index, turn) in planned { actors[actor].auto_contacts[index].pole_turn = Some(turn); }
+    }
+    for actor in actors { actor.forget(); }
+}
+
+#[cfg(test)]
+mod pole_tests {
+    use super::*;
+    use mavian_core::Mat3;
+
+    #[test]
+    fn crossing_the_signed_angle_cut_does_not_reverse_a_partially_blended_elbow() {
+        let mut contact = Contact::new("stable-pole", [0, 1, 2], Target::Point(Vec3 { x: 0.0, y: 0.0, z: 1.0 }), 0.0, 1.0);
+        contact.weight = 0.5.into();
+        contact.pole = Some(Vec3 { x: 1.0, y: 0.0, z: 0.0 });
+        contact.pole_turn = Some((-std::f64::consts::PI).into());
+        let mut elbows = Vec::new();
+        for epsilon in [-0.001f64, 0.001] {
+            let reference = Figure { joints: vec![Vec3::ZERO,
+                Vec3 { x: -mavian_core::m::cos(epsilon), y: mavian_core::m::sin(epsilon), z: 0.5 }, Vec3 { x: 0.0, y: 0.0, z: 1.0 }],
+                rots: vec![Mat3::IDENT; 3], pivot: Vec3::ZERO, lift: 0.0 };
+            let (solved, _) = solve_resolved(&reference, [(contact.clone(), reference.joints[2])], 0.5);
+            assert_eq!(solved.joints[0], reference.joints[0]);
+            assert!((solved.joints[2] - reference.joints[2]).length() < 1e-9);
+            for [a, b] in [[0, 1], [1, 2]] {
+                assert!(((solved.joints[b] - solved.joints[a]).length() - (reference.joints[b] - reference.joints[a]).length()).abs() < 1e-9);
+            }
+            elbows.push(solved.joints[1]);
+        }
+        assert!((elbows[1] - elbows[0]).length() < 0.01);
+    }
 }

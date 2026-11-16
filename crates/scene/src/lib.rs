@@ -8,6 +8,8 @@ pub mod actor;
 mod approach;
 pub mod camera;
 pub mod contact;
+mod clearance;
+mod arm_route;
 pub mod effects;
 pub mod face;
 mod grip;

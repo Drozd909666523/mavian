@@ -240,6 +240,7 @@ pub struct Actor {
     pub(crate) approach_steps: Vec<crate::approach::Step>,
     /// Compiled decisions for explicitly requested preparatory steps.
     pub step_reports: Vec<crate::StepReport>,
+    pub(crate) clearance_guides: Vec<crate::clearance::ArmGuide>,
     /// targets for the hands; actions add them (grab, put down, push)
     pub reaches: Vec<crate::ik::Reach>,
     /// Authored contacts survive action recompilation.
@@ -278,6 +279,7 @@ impl Actor {
             recoils: Vec::new(),
             approach_steps: Vec::new(),
             step_reports: Vec::new(),
+            clearance_guides: Vec::new(),
             reaches: Vec::new(),
             contacts: Vec::new(),
             auto_contacts: Vec::new(),

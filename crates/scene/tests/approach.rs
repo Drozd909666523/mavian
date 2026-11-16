@@ -144,6 +144,21 @@ fn grabbing_after_preparation_reaches_the_surface_without_an_attachment_jump() {
         assert_eq!(r.status, ContactStatus::Satisfied, "{r:?}");
         assert!(r.error < 1e-8);
     }
+    let chain = mavian_scene::actions::chain(&shot.actors[0], hand).unwrap();
+    let mut previous: Option<std::sync::Arc<mavian_rig::Figure>> = None;
+    for n in 0..=720 {
+        let w = n as f64 / 240.0;
+        let fig = shot.posed(0, w).0;
+        assert!(shot.obstacle_reports(w).is_empty(), "prop intersection at {w}");
+        assert!(shot.held_prop_reports(w).is_empty(), "held volume intersects support at {w}");
+        if w >= 1.45 { assert!(shot.self_collision_reports(w).is_empty(), "arm enters body at {w}"); }
+        if let Some(old) = previous {
+            for j in [chain[1], hand] {
+                assert!((fig.joints[j] - old.joints[j]).length() < 0.04, "arm route jumps at {w}");
+            }
+        }
+        previous = Some(fig);
+    }
 }
 
 #[test]

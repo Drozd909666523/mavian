@@ -148,7 +148,7 @@ impl Shot {
     }
 }
 
-fn clearance(obstacles: &[Obstacle], joints: &[Vec3], chain: [usize; 3], radii: [f64; 3]) -> f64 {
+pub(crate) fn clearance(obstacles: &[Obstacle], joints: &[Vec3], chain: [usize; 3], radii: [f64; 3]) -> f64 {
     let mut result = f64::INFINITY;
     for o in obstacles {
         // Endpoints reject distant props before the capsule minimizer runs.
@@ -174,6 +174,14 @@ impl Shot {
         }
         let actor = &self.actors[index];
         let mut out = figure.clone();
+        for guide in &actor.clearance_guides {
+            if let Some(point) = guide.at(w) && point.active {
+                let parent = actor.model.rig.parent(guide.chain[0]).unwrap_or(guide.chain[0]);
+                let reference = out.clone();
+                let pole = out.rots[parent] * point.pole;
+                crate::contact::place(&mut out.joints, &reference, guide.chain, point.wrist, Some(pole));
+            }
+        }
         for side in ["l", "r"] {
             let Ok(hand) = actor.model.rig.joint(&format!("hand_{side}")) else { continue };
             let Ok(chain) = crate::actions::chain(actor, hand) else { continue };
@@ -185,11 +193,32 @@ impl Shot {
                 }
             }
             let holding = self.props.iter().any(|p| p.segment(w).is_some_and(|m| held_by(m, index, hand)));
+            let lift = self.held_lift(index, hand, w, &out);
+            if lift > 1e-8 {
+                let reference = out.clone();
+                let target = out.joints[hand] + Vec3::UP * lift;
+                let pole = out.joints[chain[1]] - out.joints[chain[0]];
+                crate::contact::place(&mut out.joints, &reference, chain, target, Some(pole));
+            }
             // Holding a prop does not by itself authorize a new bend plane.
             // Preserve the solved/authored arm unless clearance requires a change.
             let obstacles = self.arm_obstacles(index, hand, w, &out);
             let radii = chain.map(|j| joint_radius(actor, j, self.style.line));
-            if clearance(&obstacles, &out.joints, chain, radii) >= -0.0001 {
+            let action_owned = holding || actor.auto_contacts.iter().any(|c| c.chain == chain && c.weight_at(w) > 0.0);
+            let bodies = if action_owned { crate::clearance::body_solids(actor, &out) } else { Vec::new() };
+            let candidate_obstacles = |candidate: &mavian_rig::Figure| {
+                if holding { self.arm_obstacles(index, hand, w, candidate) } else { obstacles.clone() }
+            };
+            let free_arm = |candidate: &mavian_rig::Figure| {
+                let props = candidate_obstacles(candidate);
+                let free = bodies.iter().fold(clearance(&props, &candidate.joints, chain, radii), |free, (_, body)| {
+                    free.min(crate::clearance::body_arm(body, candidate, chain, radii).0)
+                });
+                let lift = if holding { self.held_lift(index, hand, w, candidate) } else { 0.0 };
+                if lift > 1e-8 { free.min(-lift) } else { free }
+            };
+
+            if free_arm(&out) >= -0.0001 {
                 continue;
             }
             let original = out.clone();
@@ -200,26 +229,40 @@ impl Shot {
                     original.rots[parent] * Vec3 { x: actor.model.rig.joints()[chain[0]].side, y: 0.0, z: 0.0 }
                 }).unwrap_or(Vec3::ZERO)
             } else { Vec3::ZERO };
+            let guide = actor.clearance_guides.iter().find(|g| g.chain == chain).and_then(|g| g.at(w)).filter(|p| p.active);
+            let required = if guide.is_some() { 0.002 } else { -0.0001 };
+            let preserve_branch = guide.is_some() && !actor.auto_contacts.iter().any(|c| c.chain == chain && c.weight_at(w) >= 1.0 - 1e-8)
+                && !actor.contacts.iter().any(|c| c.priority == crate::Priority::Support && c.weight_at(w) > 0.0 && c.chain.contains(&hand));
+            let preferred_elbow = guide
+                .map(|direction| {
+                    let parent = actor.model.rig.parent(chain[0]).unwrap_or(chain[0]);
+                    root + (original.rots[parent] * direction.pole).norm() * (original.joints[chain[1]] - root).length()
+                }).unwrap_or(original.joints[chain[1]]);
             let cost = |candidate: &mavian_rig::Figure| {
                 let hand_delta = candidate.joints[hand] - original_goal;
-                let elbow_delta = candidate.joints[chain[1]] - original.joints[chain[1]];
+                let elbow_delta = candidate.joints[chain[1]] - preferred_elbow;
                 // Prefer the outside route when a held prop requires clearance.
                 let medial = (root - candidate.joints[chain[1]]).dot(outward).max(0.0);
                 hand_delta.dot(hand_delta) * 8.0 + elbow_delta.dot(elbow_delta) + medial * medial * 8.0
             };
             let mut goal = original_goal;
             let mut best = out.clone();
-            let mut best_clear = clearance(&obstacles, &best.joints, chain, radii);
+            let mut best_clear = free_arm(&best);
             let mut best_cost = f64::INFINITY;
             for _ in 0..12 {
                 for o in &obstacles {
+                    if self.props[o.prop].segment(w).is_some_and(|m| held_by(m, index, hand)) { continue; }
                     let (d, n) = o.distance(goal);
                     if d < radii[2] + 0.002 {
                         goal = goal + n * (radii[2] + 0.002 - d);
                     }
                 }
+                for (_, body) in &bodies {
+                    let (d, n) = body.distance(goal, radii[2]);
+                    if d < 0.002 { goal = goal + n * (0.002 - d); }
+                }
                 let direction = (goal - root).norm();
-                let mut bend = original.joints[chain[1]] - root;
+                let mut bend = preferred_elbow - root;
                 bend = (bend - direction * bend.dot(direction)).norm();
                 if bend.length() < 1e-8 {
                     bend = direction.cross(Vec3::UP).norm();
@@ -229,23 +272,29 @@ impl Shot {
                 }
                 let side = direction.cross(bend).norm();
                 let mut chosen_angle = 0.0;
-                for k in 0..32 {
-                    // Try the original bend first, then both directions around
-                    // the analytic elbow circle, including the opposite bend.
-                    let angle = if k % 2 == 0 { k as f64 * 0.5 } else { -((k + 1) as f64) * 0.5 } * std::f64::consts::TAU / 32.0;
+                let local_angles = (1..=7).flat_map(|level| {
+                    let angle = std::f64::consts::TAU / 32.0 * mavian_core::m::powi(0.5, level);
+                    [angle, -angle]
+                });
+                let coarse_angles = (0..32).map(|k| {
+                    (if k % 2 == 0 { k as f64 * 0.5 } else { -((k + 1) as f64) * 0.5 }) * std::f64::consts::TAU / 32.0
+                });
+                // Resolve narrow clearance intervals beside the preceding bend
+                // before accepting a distant branch from the coarse circle.
+                for angle in local_angles.chain(coarse_angles) {
                     let pole = bend * mavian_core::m::cos(angle) + side * mavian_core::m::sin(angle);
                     let mut candidate = original.clone();
                     crate::contact::place(&mut candidate.joints, &original, chain, goal, Some(pole));
-                    let free = clearance(&obstacles, &candidate.joints, chain, radii);
+                    let free = free_arm(&candidate);
                     let cost = cost(&candidate);
-                    if (free >= -0.0001 && (best_clear < -0.0001 || cost < best_cost)) || (best_clear < -0.0001 && free > best_clear) {
+                    if (free >= required && (best_clear < required || cost < best_cost)) || (best_clear < required && free > best_clear) {
                         best = candidate;
                         best_clear = free;
                         best_cost = cost;
                         chosen_angle = angle;
                     }
                 }
-                if best_clear >= -0.0001 {
+                if best_clear >= required {
                     // Refine the angular search so the elbow does not step
                     // between the coarse samples as the target moves.
                     for level in 1..=9 {
@@ -254,9 +303,9 @@ impl Shot {
                             let pole = bend * mavian_core::m::cos(angle) + side * mavian_core::m::sin(angle);
                             let mut candidate = original.clone();
                             crate::contact::place(&mut candidate.joints, &original, chain, goal, Some(pole));
-                            let free = clearance(&obstacles, &candidate.joints, chain, radii);
+                            let free = free_arm(&candidate);
                             let cost = cost(&candidate);
-                            if free >= -0.0001 && cost < best_cost {
+                            if free >= required && cost < best_cost {
                                 best = candidate;
                                 best_clear = free;
                                 best_cost = cost;
@@ -264,21 +313,36 @@ impl Shot {
                             }
                         }
                     }
-                    break;
+                    if !preserve_branch || (best.joints[chain[1]] - preferred_elbow).length() < 0.04 * actor.scale {
+                        break;
+                    }
                 }
                 // A projected endpoint can be clamped by reach limits. Use the
                 // actual closest bone point to steer the next feasible target.
+                let mut steering = best.clone();
+                if preserve_branch {
+                    crate::contact::place(&mut steering.joints, &original, chain, goal, Some(bend));
+                }
                 let mut push = Vec3::ZERO;
-                for o in &obstacles {
+                for o in &candidate_obstacles(&steering) {
                     for k in 0..2 {
-                        let (d, _, n) = o.capsule(best.joints[chain[k]], radii[k], best.joints[chain[k + 1]], radii[k + 1]);
+                        let (d, _, n) = o.capsule(steering.joints[chain[k]], radii[k], steering.joints[chain[k + 1]], radii[k + 1]);
                         if d < 0.002 {
-                            push = push + n * (0.002 - d);
+                            // Moving this wrist also moves its own prop. Its
+                            // separation gradient has the opposite sign.
+                            let coupled = self.props[o.prop].segment(w).is_some_and(|m| held_by(m, index, hand));
+                            push = push + n * ((0.002 - d) * if coupled { -1.0 } else { 1.0 });
                         }
                     }
                 }
-                goal = best.joints[hand] + push;
+                for (_, body) in &bodies {
+                    let (d, _, n) = crate::clearance::body_arm(body, &steering, chain, radii);
+                    if d < 0.002 { push = push + n * (0.002 - d); }
+                }
+                push = push + Vec3::UP * self.held_lift(index, hand, w, &steering);
+                goal = steering.joints[hand] + push;
             }
+
             out = best;
         }
         out

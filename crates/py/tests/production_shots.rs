@@ -383,11 +383,11 @@ fn interact_put_down_uses_the_clear_direct_approach() {
     let shot = load("interact");
     let actor = &shot.actors[0];
     let contact = actor.auto_contacts.iter().find(|c| c.name == "release:cup").unwrap();
-    eprintln!("selected release route: {contact:?}");
+    eprintln!("selected release approach: {:?}", contact.approach);
     assert!(contact.approach.is_none(), "a clear put-down approach must not add a retreat waypoint");
     for w in [5.21, 5.25, 5.30, 5.35, 5.40] {
         let actual = shot.contact_reports(w).into_iter().find(|(_, r)| r.name == contact.name).unwrap().1;
-        let start = actor.figure(w).joints[contact.chain[2]];
+        let start = actor.figure(contact.from).joints[contact.chain[2]];
         let target = contact.target.at(w, &shot.world());
         let delta = target - start;
         let perpendicular = (actual.goal - start).cross(delta).length() / delta.length().max(1e-9);
@@ -487,7 +487,7 @@ fn grasp_fixture_attaches_only_the_clear_reachable_unlocked_attempt() {
 }
 
 #[test]
-fn grasp_carry_preserves_the_clear_authored_elbow_and_has_no_holding_branch_flip() {
+fn grasp_preserves_clear_carry_and_has_a_continuous_pick_place_return() {
     let mut s = load("grasp");
     let actor = &s.actors[0];
     let hand = actor.model.rig.joint("hand_r").unwrap();
@@ -506,24 +506,114 @@ fn grasp_carry_preserves_the_clear_authored_elbow_and_has_no_holding_branch_flip
     eprintln!("grasp clear-carry maximum authored elbow displacement: {worst:.9} m");
     let samples: Vec<_> = (0..=720).map(|n| s.posed(0, n as f64 / 240.0).0).collect();
     let mut largest = 0.0f64;
-    // Acquisition, lifting and carrying while the prop is bound to this hand.
-    for n in 240..576 {
+    // The complete cycle includes reaching, lifting, carrying and withdrawing.
+    for n in 0..720 {
         let pair = &samples[n..=n + 1];
         for j in chain {
             largest = largest.max((pair[1].joints[j] - pair[0].joints[j]).length());
         }
     }
-    eprintln!("grasp maximum holding arm displacement per 1/240 s: {largest:.9} m");
-    assert!(largest < 0.04, "holding arm switches clearance branches: {largest}");
-    // Post-release avoidance is measured separately; it has no holding-side bias.
+    eprintln!("grasp maximum complete-cycle arm displacement per 1/240 s: {largest:.9} m");
+    assert!(largest < 0.04, "arm switches clearance branches: {largest}");
+    // The empty hand must descend to rest instead of rising back into carry.
     let mut after_release = (0.0f64, 0.0f64);
     for n in 576..720 {
         let delta = (samples[n + 1].joints[chain[1]] - samples[n].joints[chain[1]]).length();
         if delta > after_release.0 { after_release = (delta, (n + 1) as f64 / 240.0); }
     }
-    eprintln!("grasp post-release maximum elbow displacement: {:.9} m at {:.9} s (separate remaining limit)", after_release.0, after_release.1);
+    eprintln!("grasp post-release maximum elbow displacement: {:.9} m at {:.9} s", after_release.0, after_release.1);
+    assert!(after_release.0 < 0.04);
+    let mut upward = 0.0f64;
+    for pair in samples[576..=660].windows(2) {
+        upward += (pair[1].joints[hand].y - pair[0].joints[hand].y).max(0.0);
+    }
+    assert!(upward < 0.01, "empty hand rises unnecessarily after release: {upward}");
+    let rest = s.actors[0].figure(3.0);
+    assert!((samples[720].joints[hand] - rest.joints[hand]).length() < 1e-8);
     s.compile().unwrap();
     for n in (0..=720).rev() {
         assert_eq!(samples[n], s.posed(0, n as f64 / 240.0).0);
     }
+}
+
+#[test]
+fn grasp_lifts_the_whole_cup_above_its_support_without_breaking_the_grip() {
+    let s = load("grasp");
+    let cup = s.props.iter().position(|p| p.name == "cup").unwrap();
+    let pedestal = s.props.iter().position(|p| p.name == "pedestal").unwrap();
+    let hand = s.actors[0].model.rig.joint("hand_r").unwrap();
+    let mavian_scene::Motion::Held { offset, .. } = s.props[cup].segment(1.0).unwrap() else { panic!() };
+    let offset = *offset;
+    let mut min_bottom = (f64::INFINITY, 0.0);
+    for n in 0..=720 {
+        let w = n as f64 / 240.0;
+        let pos = s.prop_rest(cup, w).0;
+        let top = s.prop_rest(pedestal, w).0.y + s.props[pedestal].shape.top();
+        if pos.y < min_bottom.0 { min_bottom = (pos.y, w); }
+        assert!(pos.y >= top - 0.001, "cup enters pedestal at {w}: bottom {}, top {top}", pos.y);
+        if (1.0..2.4).contains(&w) {
+            let wrist = s.posed(0, w).0.joints[hand];
+            let actual_offset = mavian_core::Mat3::rot_y(s.actors[0].facing.at(w)) * offset;
+            assert!((pos - wrist - actual_offset).length() < 1e-8);
+        }
+    }
+    for at in [1.0, 2.4] {
+        let before = s.prop_rest(cup, at - 1e-6).0;
+        let after = s.prop_rest(cup, at + 1e-6).0;
+        assert!((before - after).length() < 1e-4, "cup jumps at handoff {at}");
+    }
+    eprintln!("minimum cup bottom during lift: {:.9} m at {:.9} s", min_bottom.0, min_bottom.1);
+}
+
+#[test]
+fn grasp_arm_stays_outside_its_torso_and_head_during_the_complete_cycle() {
+    let s = load("grasp");
+    for n in 0..=720 {
+        let w = n as f64 / 240.0;
+        assert!(s.self_collision_reports(w).is_empty(), "arm/body collision at {w}: {:?}", s.self_collision_reports(w));
+    }
+}
+
+#[test]
+fn interact_prop_action_arms_stay_outside_the_torso_and_head() {
+    fn held(m: &mavian_scene::Motion, actor: usize, hand: usize) -> bool {
+        match m {
+            mavian_scene::Motion::Held { actor: a, hand: h, .. } => *a == actor && *h == hand,
+            mavian_scene::Motion::Above { held: m, .. } => held(m, actor, hand),
+            _ => false,
+        }
+    }
+    let s = load("interact");
+    let mut unowned = (0usize, 0.0f64);
+    for n in 0..=(s.length * 240.0) as usize {
+        let w = n as f64 / 240.0;
+        for (actor, r) in s.self_collision_reports(w) {
+            let owned = s.actors[actor].auto_contacts.iter().any(|c| c.chain == r.chain && c.weight_at(w) > 0.0)
+                || s.props.iter().any(|p| p.segment(w).is_some_and(|m| held(m, actor, r.chain[2])));
+            assert!(!owned, "action arm enters its own body at {w}: {r:?}");
+            unowned.0 += 1;
+            unowned.1 = unowned.1.max(r.error);
+        }
+    }
+    eprintln!("unmodified authored free-arm proxy overlaps: {}, maximum {:.6}m", unowned.0, unowned.1);
+}
+
+#[test]
+fn route_cache_does_not_reuse_absolute_wrist_positions_after_world_translation() {
+    use mavian_core::Track;
+    let mut s = load("interact");
+    let hand = s.actors[0].model.rig.joint("hand_r").unwrap();
+    let before = s.posed(0, 5.35).0;
+    let root = s.actors[0].model.root;
+    for a in &mut s.actors {
+        let Track::Const((x, _)) = &mut a.path else { panic!("fixture path changed") };
+        *x += 0.25;
+    }
+    for p in &mut s.props { p.at.x += 0.25; }
+    s.compile().unwrap();
+    let after = s.posed(0, 5.35).0;
+    assert!((after.joints[root].x - before.joints[root].x - 0.25).abs() < 1e-8);
+    let shifted = after.joints[hand] - before.joints[hand];
+    assert!((0.20..0.30).contains(&shifted.x), "stale cached wrist: {shifted:?}");
+    assert!(shifted.y.abs().max(shifted.z.abs()) < 0.05);
 }

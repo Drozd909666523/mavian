@@ -142,6 +142,25 @@ fn held_offset_uses_the_final_deformed_hand_and_sampling_has_no_event_history() 
 }
 
 #[test]
+fn reach_endpoints_remain_continuous_under_nonidentity_body_deformation() {
+    let mut s = scene(0.35);
+    s.length = 1.2;
+    s.actors[0].squash = 0.3;
+    s.actors[0].path = Keys::new(Ease::Linear).key(0.0, (0.0, 0.0)).key(2.0, (4.0, 0.0)).into();
+    s.props[0].at.x = 0.7;
+    if let Action::Grab { at, .. } = &mut s.actions[0] { *at = 0.5; }
+    compile(&mut s);
+    assert_eq!(s.grab_reports[0].status, GrabStatus::Attached);
+    assert_ne!(s.posed(0, 0.5).1.unwrap(), Mat3::IDENT);
+    let hand = s.grab_reports[0].hand;
+    for at in [0.1, 0.85] {
+        let before = s.posed(0, at - 1e-6).0;
+        let after = s.posed(0, at + 1e-6).0;
+        assert!((before.joints[hand] - after.joints[hand]).length() < 1e-4, "wrist jumps at {at}");
+    }
+}
+
+#[test]
 fn later_overlapping_contacts_cannot_invalidate_a_verified_acquisition_silently() {
     let mut s = scene(0.35);
     let hand = s.actors[0].model.rig.joint("hand_r").unwrap();

@@ -174,8 +174,16 @@ a later release without a successful binding does nothing. An occupied hand or
 already-held prop cannot acquire a second binding. `at` remains the authored
 acquisition instant; no automatic waiting or retiming is added.
 
+Grab and placement transitions use fixed wrist endpoints sampled from the
+animated, deformed pose. Difficult prop-action intervals receive a deterministic
+arm route with sampled clearance against props, the torso and the head. The
+held item's volume can lift the wrist above a support without sliding the grip.
+Automatic `onto=prop` placement accounts for the item's yawed footprint and grip
+offset; explicit point targets keep their authored coordinates.
+
 Contact diagnostics distinguish satisfied, blending, unreachable, conflicting,
-invalid and obstructed goals. A failed target is reported rather than silently
+invalid and obstructed goals. `volume:` and `self:` entries identify unresolved
+held-item and arm/body penetration. A failed target is reported rather than silently
 stretching the limb to reach it.
 
 ## Rendering and diagnostics
@@ -245,8 +253,13 @@ CPU and GPU output can differ slightly at rasterization boundaries.
   and pushing are not yet gated by actual support or palm contact.
 - Preparatory motion is a bounded step with a trailing-foot follow. It does
   not navigate around obstacles, plan multiple steps or simulate balance.
-- Clearance checks use conservative primitives and sampled trajectories,
-  rather than continuous collision detection for arbitrary geometry.
+- Clearance checks use conservative primitives and sampled trajectories.
+  Arm/body correction applies to prop-action arms; free authored animation is
+  diagnosed without adding general full-body collision response. Proximal
+  shoulder tissue is excluded from the arm/torso proxy check. This is not a
+  rigid-body simulation or continuous collision detection for arbitrary geometry.
+- A difficult prop-action interval must have a connected route in the sampled
+  configuration graph; compilation reports an error if it cannot find one.
 - Some strike poses and contact transitions still need visual refinement.
   The API and renderer are experimental, with Linux as the current development
   platform.
