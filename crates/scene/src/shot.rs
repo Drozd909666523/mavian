@@ -103,6 +103,8 @@ pub struct Shot {
     pub actions: Vec<Action>,
     /// Deterministic acquisition decisions, including failed attempts.
     pub grab_reports: Vec<crate::GrabReport>,
+    /// Deterministic hand-to-support placement decisions.
+    pub placement_reports: Vec<crate::PlacementReport>,
     /// made by strikes: hit-stops (when, how long in shot seconds), impact
     /// frames (when), camera shakes
     pub stops: Vec<(f64, f64)>,
@@ -136,6 +138,7 @@ impl Default for Shot {
             fires: Vec::new(),
             actions: Vec::new(),
             grab_reports: Vec::new(),
+            placement_reports: Vec::new(),
             stops: Vec::new(),
             flashes: Vec::new(),
             auto_shakes: Vec::new(),

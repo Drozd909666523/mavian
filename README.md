@@ -135,6 +135,8 @@ output frames; `draw_on=1` updates it every frame.
 | [fire.py](shots/fire.py) | Stylized fire, sparks and depth composition |
 | [contacts.py](shots/contacts.py) | Support constraints, contact residuals and explicit torso assistance |
 | [approach.py](shots/approach.py) | Preparatory steps, blocked paths, distance budgets and pose locking |
+| [grasp.py](shots/grasp.py) | Acquisition, obstruction and smooth rejected attempts |
+| [place.py](shots/place.py) | Verified placement, retained grips and high/blocked/narrow supports |
 
 Select a variant with `-v`, or render every variant with `--all`:
 
@@ -189,6 +191,16 @@ offset; explicit point targets keep their authored coordinates. Naming a support
 does not request the item's original position. Use `onto=(x, y, z)` to specify
 an exact placement point.
 
+Placement onto a named prop (`onto=support`) transfers ownership only when the
+final held item reaches its target within 2 mm, touches the support top, fits
+its footprint and has no detected arm/item obstruction. The verified transform
+is preserved at handoff. A refused placement keeps the item held and limits the
+attempt before withdrawal; it does not automatically release later. The intent
+and decision remain available in `placements` and `placements.csv`.
+
+This gate applies to named supports. Explicit world-point releases retain their
+existing target/fall semantics; omitting `onto` still requests a free drop.
+
 Contact diagnostics distinguish satisfied, blending, unreachable, conflicting,
 invalid and obstructed goals. `volume:` and `self:` entries identify unresolved
 held-item and arm/body penetration. A failed target is reported rather than silently
@@ -204,6 +216,7 @@ stretching the limb to reach it.
 ./target/release/mavian contacts shots/interact.py
 ./target/release/mavian steps shots/approach.py
 ./target/release/mavian grabs shots/interact.py
+./target/release/mavian placements shots/interact.py
 
 # Render the acquisition regression with diagnostics
 ./target/release/mavian render shots/grasp.py --contacts
@@ -220,6 +233,9 @@ stretching the limb to reach it.
 `grabs` prints each acquisition decision and its residual, including failed
 attempts after the reach has ended. `render --contacts` also saves `grabs.csv`.
 The permanent `grasp.py` fixture has `far`, `locked` and `blocked` variants.
+`shots/place.py` adds blocked, unreachable and undersized-support placement
+variants. Clean renders of named-support placements also write `placements.csv`;
+`--contacts` adds the decision label over the handoff/withdrawal frames.
 
 `--vector` writes SVG lines to `out/<shot>/lines/`. Sketch mode uses an SVG
 rendering path and produces PNG/video output through the usual pipeline.
@@ -257,8 +273,11 @@ CPU and GPU output can differ slightly at rasterization boundaries.
   contact or finger-level grip simulation. Later actions that invalidate an
   earlier verified acquisition are rejected during compilation; separate their
   contact intervals.
-- Release and sliding remain scheduled by authored times. Successful placement
-  and pushing are not yet gated by actual support or palm contact.
+- Named-support placement is contact-gated at the authored instant, without
+  automatic retiming. Explicit world-point releases keep their legacy behavior.
+  Pushing is not yet gated by actual palm contact.
+- Placement uses conservative upright shape proxies and projected containment.
+  It does not simulate friction, balance or dynamic stability on curved supports.
 - Preparatory motion is a bounded step with a trailing-foot follow. It does
   not navigate around obstacles, plan multiple steps or simulate balance.
 - Clearance checks use conservative primitives and sampled trajectories.

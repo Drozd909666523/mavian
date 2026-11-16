@@ -1319,6 +1319,7 @@ impl PyShot {
             fires: self.fires.clone(),
             actions: Vec::new(),
             grab_reports: Vec::new(),
+            placement_reports: Vec::new(),
             stops: Vec::new(),
             flashes: Vec::new(),
             auto_shakes: Vec::new(),

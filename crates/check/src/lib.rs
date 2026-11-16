@@ -175,3 +175,26 @@ pub fn grabs(shot: &Shot) -> Report {
         text: format!("grabs: {} attached, {} rejected{}{}", shot.grab_reports.len() - failed.len(), failed.len(),
             if details.is_empty() { "" } else { "; " }, details) }
 }
+
+
+/// Placement decisions persist independently of the display frame grid.
+pub fn placements(shot: &Shot) -> Report {
+    let failed: Vec<_> = shot.placement_reports.iter().filter(|r| !r.placed()).collect();
+    let details = failed
+        .iter()
+        .map(|r| {
+            format!("{} on {} at {:.3}s: {:?} ({:.1} mm)", shot.props[r.prop].name, shot.props[r.support].name, r.at, r.status, r.error * 1000.0)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Report {
+        status: if failed.is_empty() { Status::Ok } else { Status::Warn },
+        text: format!(
+            "placements: {} placed, {} rejected{}{}",
+            shot.placement_reports.len() - failed.len(),
+            failed.len(),
+            if details.is_empty() { "" } else { "; " },
+            details
+        ),
+    }
+}

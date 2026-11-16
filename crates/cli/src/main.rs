@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::Instant;
 
-const USAGE: &str = "usage: mavian list | render|digest|check|dump|compare|contacts|steps|grabs <shot> [-v variant] [--all] [--no-video] \
+const USAGE: &str = "usage: mavian list | render|digest|check|dump|compare|contacts|steps|grabs|placements <shot> [-v variant] [--all] [--no-video] \
                      [--layers paint,lines,sketch] [--gpu low-power|high-performance|cpu] [--cpu] [--vector] [--contacts]\n\
                      <shot> is a shot file (shots/x.py) or a built-in shot";
 
@@ -176,6 +176,7 @@ fn key(shot: &Shot, f: &FrameState, o: &Opts, device: &str) -> Fingerprint {
     }
     if o.contacts {
         h.add(&format!("{:?}", shot.contact_reports(f.w)));
+        h.add(&format!("{:?}", shot.placement_reports));
     }
     h.finish()
 }
@@ -349,6 +350,9 @@ fn render(shot: &Shot, o: &Opts, gpu: &mut Dev) -> Result<(), String> {
         std::fs::write(out.join("contacts.csv"), contact_csv(shot)).map_err(|e| e.to_string())?;
         std::fs::write(out.join("grabs.csv"), grab_csv(shot)).map_err(|e| e.to_string())?;
     }
+    if !shot.placement_reports.is_empty() {
+        std::fs::write(out.join("placements.csv"), placement_csv(shot)).map_err(|e| e.to_string())?;
+    }
     if o.vector {
         // the line stage as vectors, from the CPU reference's buffers
         let dir = out.join("lines");
@@ -469,6 +473,36 @@ fn grab_csv(shot: &Shot) -> String {
     csv
 }
 
+fn placement_csv(shot: &Shot) -> String {
+    use std::fmt::Write;
+    let mut csv = String::from(
+        "actor,hand,prop,support,world,status,error_mm,tolerance_mm,support_gap_mm,edge_margin_mm,target_x,target_y,target_z,actual_x,actual_y,actual_z\n",
+    );
+    for r in &shot.placement_reports {
+        let _ = writeln!(
+            csv,
+            "{},{},{},{},{:.9},{:?},{:.6},{:.6},{:.6},{:.6},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}",
+            r.actor,
+            r.hand,
+            r.prop,
+            r.support,
+            r.at,
+            r.status,
+            r.error * 1000.0,
+            r.tolerance * 1000.0,
+            r.support_gap * 1000.0,
+            r.edge_margin * 1000.0,
+            r.target.x,
+            r.target.y,
+            r.target.z,
+            r.actual.x,
+            r.actual.y,
+            r.actual.z
+        );
+    }
+    csv
+}
+
 fn step_dump(shot: &Shot) {
     println!("actor,prop,from,to,status,max_distance,shift_x,shift_z,error_before_mm,error_after_mm");
     for (actor, a) in shot.actors.iter().enumerate() {
@@ -492,7 +526,7 @@ fn check(o: &Opts, variant: &str, shot: &Shot, gpu: &mut Dev) -> Result<bool, St
     let one = Opts { variant: Some(variant.into()), all: false, ..o.clone() };
     let mut other = load(&one)?.remove(0).1;
     other.seed += 1;
-    let mut reports = vec![feet(shot, &tl), camera(shot, &tl), mavian_check::contacts(shot, &tl), mavian_check::grabs(shot)];
+    let mut reports = vec![feet(shot, &tl), camera(shot, &tl), mavian_check::contacts(shot, &tl), mavian_check::grabs(shot), mavian_check::placements(shot)];
     if !shot.actors.is_empty() {
         reports.push(seed_independence(shot, &other));
     }
@@ -641,6 +675,7 @@ fn main() -> ExitCode {
                 "contacts" => contact_dump(&shot)?,
                 "steps" => step_dump(&shot),
                 "grabs" => print!("{}", grab_csv(&shot)),
+                "placements" => print!("{}", placement_csv(&shot)),
                 "check" => ok &= check(&o, &variant, &shot, &mut gpu)?,
                 "compare" => ok &= compare(&shot, &o)?,
                 _ => return Err(USAGE.into()),

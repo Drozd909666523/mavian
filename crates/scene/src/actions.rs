@@ -188,7 +188,7 @@ pub(crate) fn window(t0: f64, t1: f64, reach: f64, settle: f64) -> Track<f64> {
 
 /// Clamp the shoulder/grip-aligned item anchor onto the support, keeping
 /// its yawed footprint inside the edges with a 20 mm inset when it fits.
-fn near_spot(support: &Prop, object: &Prop, object_rot: Mat3, t: f64, desired: Vec3, world: &World) -> Vec3 {
+pub(crate) fn near_spot(support: &Prop, object: &Prop, object_rot: Mat3, t: f64, desired: Vec3, world: &World) -> Vec3 {
     let (pos, rot) = support.rest(t, world);
     match support.shape {
         Shape::Box { sx, sy, sz } => {
@@ -235,6 +235,7 @@ pub fn compile(actors: &mut [Actor], props: &mut [Prop], actions: &[Action]) -> 
 pub(crate) fn compile_shot(shot: &mut crate::Shot) -> Result<ShotEffects, String> {
     let mut fx: ShotEffects = (Vec::new(), Vec::new(), Vec::new());
     shot.grab_reports.clear();
+    shot.placement_reports.clear();
     let (actors, props) = (&mut shot.actors, &mut shot.props);
     for a in actors.iter_mut() {
         a.reaches.clear();
@@ -284,9 +285,11 @@ pub(crate) fn compile_shot(shot: &mut crate::Shot) -> Result<ShotEffects, String
     plan_contact_routes(&mut shot.actors, &shot.props, shot.style.line);
     crate::contact::plan_poles(&mut shot.actors, &shot.props);
     crate::grip::plan_rejections(shot);
+    crate::placement::plan_rejections(shot);
     crate::grip::verify(shot)?;
     shot.plan_arm_clearance()?;
     crate::grip::refresh_rejections(shot);
+    crate::placement::verify(shot)?;
     crate::grip::verify(shot)?;
     Ok(fx)
 }
@@ -564,6 +567,9 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
     if matches!(action, Action::Grab { .. }) {
         return crate::grip::grab(shot, action);
     }
+    if matches!(action, Action::Release { onto: Onto::Prop(_), .. }) {
+        return crate::placement::release(shot, action);
+    }
     let endpoints = if let Action::Release { actor, hand, at, reach, settle, .. } = *action {
         Some((shot.deformed(actor, at - reach).0.joints[hand], shot.deformed(actor, at + settle).0.joints[hand]))
     } else { None };
@@ -571,7 +577,6 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
     match *action {
         Action::Grab { .. } => unreachable!("grabs are contact-gated"),
         Action::Release { actor, hand, prop, at: t, ref onto, reach, settle } => {
-            let world = World { actors, props };
             let Some(held @ Motion::Held { actor: owner, hand: grip, offset, .. }) = props[prop].segment(t).cloned() else {
                 // A missed acquisition leaves its later release without a binding.
                 if shot.grab_reports.iter().rev().find(|r| r.prop == prop && r.actor == actor && r.hand == hand && r.at <= t).is_some_and(|r| !r.attached()) {
@@ -593,10 +598,7 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
             let place = match onto {
                 Onto::Nothing => None,
                 Onto::Point(p) => Some(*p),
-                Onto::Prop(s) => {
-                    let desired = actors[actor].figure(t).joints[ch[0]] + Mat3::rot_y(actors[actor].facing.at(t)) * offset;
-                    Some(near_spot(&props[*s], &props[prop], held.at(t, &world).1, t, desired, &world))
-                },
+                Onto::Prop(_) => unreachable!("named placements are contact-gated"),
             };
             let mut new_reach = None;
             if let Some(place) = place {
@@ -630,19 +632,7 @@ fn apply(shot: &mut crate::Shot, action: &Action) -> Result<(), String> {
             let world = World { actors, props };
             let (pos, rot) = held.at(t, &world);
             let next = match onto {
-                Onto::Prop(s) => {
-                    // on a prop: rides with it from now on
-                    let (sp, sr) = props[*s].rest(t, &world);
-                    let local = sr.transpose() * (pos - sp);
-                    let top = props[*s].shape.top();
-                    Motion::Ride {
-                        support: *s,
-                        offset: Vec3 { x: local.x, y: top, z: local.z },
-                        yaw: rot.heading() - sr.heading(),
-                        drop: (local.y - top).max(0.0),
-                        t0: t,
-                    }
-                }
+                Onto::Prop(_) => unreachable!("named placements are contact-gated"),
                 _ if pos.y > floor + 1e-3 => Motion::Fall { pos, rot, floor, t0: t },
                 _ => Motion::Rest { pos: Vec3 { y: floor, ..pos }, rot },
             };

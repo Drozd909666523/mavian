@@ -31,6 +31,13 @@ pub fn contact_svg(shot: &Shot, f: &FrameState) -> String {
             1000.0 * r.error
         );
     }
+    for r in &shot.placement_reports {
+        if f.w < r.at || f.w > r.at+0.35 { continue; }
+        let Some(p)=f.cam.project(shot.prop_rest(r.prop,f.w).0) else { continue };
+        let color=if r.placed() { "#008860" } else { "#d53535" };
+        let _=write!(out,r#"<text x="{}" y="{}" fill="{color}" font-size="12" font-family="DejaVu Sans, sans-serif">placement {:?}: {:.1}mm</text>"#,
+            p.x+8.0,p.y+18.0,r.status,r.error*1000.0);
+    }
     out.push_str("</svg>");
     out
 }

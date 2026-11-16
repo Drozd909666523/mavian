@@ -283,6 +283,11 @@ fn interact_uses_contacts_for_props_and_keeps_the_held_cup_attached() {
     let mut s = load("interact");
     assert!(s.actors[0].reaches.is_empty(), "prop actions must use the shared contact solver");
     assert_eq!(s.actors[0].auto_contacts.len(), 4);
+    assert_eq!(s.placement_reports.len(), 1);
+    let placed = &s.placement_reports[0];
+    assert!(placed.placed(), "original interact placement failed: {placed:?}");
+    assert!(placed.error < 1e-8 && placed.support_gap.abs() < 1e-8);
+    assert!((s.prop_rest(placed.prop, placed.at-1e-6).0-s.prop_rest(placed.prop,placed.at+1e-6).0).length() < 1e-4);
     for w in [2.9, 3.2, 4.0, 5.2, 5.7] {
         let reports = s.contact_reports(w);
         let held = &reports.iter().find(|(_, r)| r.name == "hold:cup").unwrap().1;
@@ -718,4 +723,34 @@ fn route_cache_does_not_reuse_absolute_wrist_positions_after_world_translation()
     let shifted = after.joints[hand] - before.joints[hand];
     assert!((0.20..0.30).contains(&shifted.x), "stale cached wrist: {shifted:?}");
     assert!(shifted.y.abs().max(shifted.z.abs()) < 0.05);
+}
+
+
+#[test]
+fn placement_fixture_reports_each_support_decision_and_preserves_failed_holds() {
+    use mavian_scene::{Motion, PlacementStatus};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shots/place.py");
+    for (name, mut shot) in mavian_py::load_file(&path).unwrap() {
+        assert!(shot.grab_reports[0].attached(), "{name}");
+        let expected = match name.as_str() {
+            "base" => PlacementStatus::Placed,
+            "high" => PlacementStatus::Unreachable,
+            "blocked" => PlacementStatus::Obstructed,
+            "edge" => PlacementStatus::OutsideSupport,
+            _ => panic!(),
+        };
+        assert_eq!(shot.placement_reports.len(), 1);
+        let report = shot.placement_reports[0].clone();
+        assert_eq!(report.status, expected, "{name}");
+        assert_eq!(matches!(shot.props[report.prop].segment(2.9), Some(Motion::Ride { .. })), report.placed());
+        if !report.placed() {
+            assert!(matches!(shot.props[report.prop].segment(2.9), Some(Motion::Held { .. })));
+        }
+        let points: Vec<_> = [1.8, 2.0, 2.4, 2.6, 2.9].map(|w| (w, shot.prop_rest(report.prop, w))).into();
+        shot.compile().unwrap();
+        assert_eq!(shot.placement_reports[0], report);
+        for (w, point) in points.into_iter().rev() {
+            assert_eq!(point, shot.prop_rest(report.prop, w));
+        }
+    }
 }

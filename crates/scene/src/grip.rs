@@ -205,47 +205,51 @@ pub(crate) fn plan_rejections(shot: &mut Shot) {
         }) else {
             continue;
         };
-        let original = actor.auto_contacts[index].clone();
-        let mut reach = original.clone();
-        // A refused reach keeps the authored bend instead of rotating towards
-        // the grip pole of an object that the hand will not acquire.
-        reach.pole = None;
-        reach.pole_turn = None;
-        let set_scale = |shot: &mut Shot, amount| {
-            let mut contact = reach.clone();
-            contact.rejection = Some((r.at, amount));
-            shot.actors[r.actor].auto_contacts[index] = contact;
-            forget(shot);
-        };
-        set_scale(shot, 0.0);
-        if rejection_is_clear(shot, r.actor, original.chain, original.from, original.to) {
-            let (mut low, mut high) = (0.0, 1.0);
-            // Test growing prefixes rather than assuming disconnected feasible
-            // intervals form one monotone search space.
-            for n in 1..=16 {
-                let amount = n as f64 / 16.0;
-                set_scale(shot, amount);
-                if rejection_is_clear(shot, r.actor, original.chain, original.from, original.to) {
-                    low = amount;
-                } else {
-                    high = amount;
-                    break;
-                }
+        limit_attempt(shot, r.actor, index, r.at);
+    }
+}
+
+pub(crate) fn limit_attempt(shot: &mut Shot, actor: usize, index: usize, peak: f64) {
+    let original = shot.actors[actor].auto_contacts[index].clone();
+    let mut reach = original.clone();
+    // A refused reach keeps the authored bend instead of rotating towards
+    // the grip pole of an object that the hand will not acquire.
+    reach.pole = None;
+    reach.pole_turn = None;
+    let set_scale = |shot: &mut Shot, amount| {
+        let mut contact = reach.clone();
+        contact.rejection = Some((peak, amount));
+        shot.actors[actor].auto_contacts[index] = contact;
+        forget(shot);
+    };
+    set_scale(shot, 0.0);
+    if rejection_is_clear(shot, actor, original.chain, original.from, original.to) {
+        let (mut low, mut high) = (0.0, 1.0);
+        // Test growing prefixes rather than assuming disconnected feasible
+        // intervals form one monotone search space.
+        for n in 1..=16 {
+            let amount = n as f64 / 16.0;
+            set_scale(shot, amount);
+            if rejection_is_clear(shot, actor, original.chain, original.from, original.to) {
+                low = amount;
+            } else {
+                high = amount;
+                break;
             }
-            for _ in 0..8 {
-                if low == 1.0 {
-                    break;
-                }
-                let mid = (low + high) * 0.5;
-                set_scale(shot, mid);
-                if rejection_is_clear(shot, r.actor, original.chain, original.from, original.to) {
-                    low = mid;
-                } else {
-                    high = mid;
-                }
-            }
-            set_scale(shot, low);
         }
+        for _ in 0..8 {
+            if low == 1.0 {
+                break;
+            }
+            let mid = (low + high) * 0.5;
+            set_scale(shot, mid);
+            if rejection_is_clear(shot, actor, original.chain, original.from, original.to) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        set_scale(shot, low);
     }
 }
 
@@ -262,9 +266,22 @@ fn rejection_is_clear(shot: &Shot, actor: usize, chain: [usize; 3], from: f64, t
     for n in 0..=samples {
         let w = from + (to - from) * n as f64 / samples as f64;
         let (base, m) = shot.deformed(actor, w);
-        let fig = shot.solve_actor_contacts(actor, w, &base, m).0;
-        if clearance(&shot.arm_obstacles(actor, chain[2], w, &fig), &fig.joints, chain, radii) < margin
-            || body_solids(a, &fig).iter().any(|(_, body)| body_arm(body, &fig, chain, radii).0 < -PENETRATION)
+        let (fig,reports) = shot.solve_actor_contacts(actor, w, &base, m);
+        if reports.iter().any(|r| r.chain==chain && r.reach_error>1e-6) {return false;}
+        // Do not run a refused attempt into the fully straight IK singularity.
+        // Retain up to 2 mm of extension reserve, without demanding more bend
+        // than the author's own (possibly straight) pose provides.
+        let raw=a.figure(w);
+        let reference=raw.stretched_about(m,a.stretch_pivot(&raw));
+        let extension=|f:&mavian_rig::Figure| (f.joints[chain[1]]-f.joints[chain[0]]).length()
+            +(f.joints[chain[2]]-f.joints[chain[1]]).length()-(f.joints[chain[2]]-f.joints[chain[0]]).length();
+        if extension(&fig)+1e-8 < extension(&reference).clamp(0.0,0.002*a.scale) {return false;}
+        let holding=shot.props.iter().any(|p| p.segment(w).and_then(crate::clearance::binding).is_some_and(|(i,h,_,_)| i==actor && h==chain[2]));
+        let body_margin=if holding { 0.002*a.scale } else { -PENETRATION };
+        if shot.held_lift(actor, chain[2], w, &fig) > 1e-8
+            || crate::placement::held_obstructed(shot, actor, chain[2], w, &fig)
+            || clearance(&shot.arm_obstacles(actor, chain[2], w, &fig), &fig.joints, chain, radii) < margin
+            || body_solids(a, &fig).iter().any(|(_, body)| body_arm(body, &fig, chain, radii).0 < body_margin)
         {
             return false;
         }
